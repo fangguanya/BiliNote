@@ -357,21 +357,41 @@ class NotionService:
                     file_path = file_path[1:]  # 移除开头的 /，变成 static/...
                 
                 # 构建完整路径，尝试多种可能的位置
+                # 增加更多可能的路径组合以解决从JSON重新加载时的路径问题
                 possible_paths = [
-                    os.path.join(os.getcwd(), 'backend', file_path),  # backend/static/...
-                    os.path.join(os.getcwd(), file_path),             # static/...
-                    file_path                                          # 绝对路径
+                    # 当前工作目录下的路径
+                    os.path.join(os.getcwd(), 'backend', file_path),     # backend/static/...
+                    os.path.join(os.getcwd(), file_path),                # static/...
+                    
+                    # 如果路径已经包含static，尝试不同的组合
+                    os.path.join(os.getcwd(), 'backend', 'static', file_path.replace('static/', '')),  # backend/static/screenshots/...
+                    os.path.join(os.getcwd(), 'static', file_path.replace('static/', '')),             # static/screenshots/...
+                    
+                    # 如果是screenshots相关路径，尝试直接在static目录下查找
+                    os.path.join(os.getcwd(), 'backend', 'static', 'screenshots', os.path.basename(file_path)),
+                    os.path.join(os.getcwd(), 'static', 'screenshots', os.path.basename(file_path)),
+                    
+                    # 绝对路径
+                    file_path
                 ]
                 
                 full_path = None
-                for path in possible_paths:
+                for i, path in enumerate(possible_paths):
+                    logger.debug(f"尝试路径 {i+1}: {path}")
                     if os.path.exists(path):
                         full_path = path
+                        logger.info(f"✅ 找到文件在路径 {i+1}: {path}")
                         break
+                    else:
+                        logger.debug(f"❌ 路径不存在: {path}")
                 
                 if not full_path or not os.path.exists(full_path):
-                    logger.error(f"本地文件不存在: {original_path}")
-                    logger.debug(f"尝试过的路径: {possible_paths}")
+                    logger.error(f"❌ 本地文件不存在: {original_path}")
+                    logger.error(f"📁 当前工作目录: {os.getcwd()}")
+                    logger.error(f"🔍 尝试过的所有路径:")
+                    for i, path in enumerate(possible_paths):
+                        exists = "✅ 存在" if os.path.exists(path) else "❌ 不存在"
+                        logger.error(f"  {i+1}. {path} - {exists}")
                     return None
                 
                 logger.info(f"找到本地文件: {full_path}")
@@ -506,9 +526,9 @@ class NotionService:
                     current_paragraph = []
                 continue
             
-            # 图片处理 - 支持带星号前缀的格式，如: *![](/static/screenshots/...)
-            # 匹配模式: 可选的星号(*) + 图片markdown语法
-            image_match = re.match(r'^\*?!\[([^\]]*)\]\(([^)]+)\)$', line.strip())
+            # 图片处理 - 支持带星号前缀和后缀的格式，如: *![](/static/screenshots/...)*
+            # 匹配模式: 可选的星号(*) + 图片markdown语法 + 可选的星号(*)
+            image_match = re.match(r'^\*?\s*!\[([^\]]*)\]\(([^)]+)\)\s*\*?$', line.strip())
             if image_match:
                 if current_paragraph:
                     blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
@@ -518,6 +538,7 @@ class NotionService:
                 image_url = image_match.group(2)
                 
                 logger.info(f"🖼️ 处理图片: {image_url}, alt_text: '{alt_text}'")
+                logger.debug(f"📁 当前工作目录: {os.getcwd()}")
                 
                 # 上传图片到Notion并创建图片块
                 file_upload_id = self.upload_file_to_notion(image_url)
@@ -525,9 +546,12 @@ class NotionService:
                     logger.info(f"✅ 图片上传成功，创建file_upload图片块")
                     blocks.append(self._create_image_block_with_upload(file_upload_id, alt_text))
                 else:
-                    # 如果上传失败，回退到外部链接方式
-                    logger.warning(f"⚠️ 图片上传失败，回退到外部链接: {image_url}")
-                    blocks.append(self._create_image_block_external(image_url, alt_text))
+                    # 如果上传失败，创建一个带有错误信息的段落而不是外部链接
+                    logger.warning(f"⚠️ 图片上传失败，将作为文本段落处理: {image_url}")
+                    error_text = f"[图片上传失败: {os.path.basename(image_url)}]"
+                    if alt_text:
+                        error_text = f"[图片上传失败: {alt_text} - {os.path.basename(image_url)}]"
+                    blocks.append(self._create_paragraph_block(error_text))
                 continue
             
             # 标题处理
