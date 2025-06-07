@@ -6,7 +6,12 @@ from urllib.parse import urlparse, parse_qs
 
 # 添加日志支持
 from app.utils.logger import get_logger
+from app.services.cookie_manager import CookieConfigManager
+
 logger = get_logger(__name__)
+
+# 初始化Cookie管理器
+cookie_manager = CookieConfigManager()
 
 def extract_video_id(url: str, platform: str) -> Optional[str]:
     """
@@ -66,6 +71,12 @@ def is_video_part_of_collection(url: str) -> bool:
             'Referer': 'https://www.bilibili.com/'
         }
         
+        # 添加登录cookie支持
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie")
+            headers['Cookie'] = bilibili_cookie
+        
         response = requests.get(api_url, headers=headers, timeout=10)
         
         if response.status_code == 200:
@@ -88,21 +99,32 @@ def is_video_part_of_collection(url: str) -> bool:
                     logger.info(f"✅ 视频 {bv_id} 有 {page_count} 个分P，认为是合集")
                     return True
                 
-                # 检查3: 是否属于系列视频（通过up主的其他视频判断）
+                # 检查3: 是否属于番剧/电影等（season字段）
+                if 'season' in video_data and video_data['season']:
+                    season_info = video_data['season']
+                    season_title = season_info.get('title', '未知番剧')
+                    logger.info(f"✅ 视频 {bv_id} 属于番剧: {season_title}")
+                    return True
+                
+                # 检查4: 是否属于系列视频（通过up主的其他视频判断）
                 if 'owner' in video_data:
                     owner_mid = video_data['owner'].get('mid')
                     video_title = video_data.get('title', '')
                     
                     # 如果标题包含明显的系列标识，也认为是合集
-                    series_keywords = ['合集', '系列', '第一集', '第二集', 'P1', 'P2', '上篇', '下篇', '（一）', '（二）']
+                    series_keywords = ['合集', '系列', '第一集', '第二集', 'P1', 'P2', '上篇', '下篇', '（一）', '（二）', 
+                                     '【合集】', '【系列】', '全集', '连载', '番外', 'EP', 'ep']
                     if any(keyword in video_title for keyword in series_keywords):
                         logger.info(f"✅ 视频 {bv_id} 标题包含系列关键词，认为是合集")
                         return True
                 
-                # 检查4: 尝试检查是否有相关的合集信息
+                # 检查5: 尝试检查是否有相关的合集信息
                 # 使用视频详细信息API获取更多数据
                 detail_api_url = f"https://api.bilibili.com/x/web-interface/view/detail?bvid={bv_id}"
-                detail_response = requests.get(detail_api_url, headers=headers, timeout=8)
+                detail_headers = headers.copy()
+                if bilibili_cookie:
+                    detail_headers['Cookie'] = bilibili_cookie
+                detail_response = requests.get(detail_api_url, headers=detail_headers, timeout=8)
                 
                 if detail_response.status_code == 200:
                     detail_data = detail_response.json()
@@ -136,17 +158,24 @@ def is_collection_url(url: str, platform: str) -> bool:
     logger.info(f"🔍 检测合集URL: {url}, 平台: {platform}")
     
     if platform == "bilibili":
-        # 明确的合集URL模式
+        # 明确的合集URL模式（参考bilibili-API-collect项目的分类）
         collection_patterns = [
             r"space\.bilibili\.com/\d+/favlist",  # 收藏夹
             r"space\.bilibili\.com/\d+/channel/collectiondetail",  # 合集
-            r"bilibili\.com/medialist/play/",  # 播放列表
             r"space\.bilibili\.com/\d+/channel/seriesdetail",  # 系列
+            r"bilibili\.com/medialist/play/",  # 播放列表
+            r"bilibili\.com/watchlater",  # 稍后再看
+            r"www\.bilibili\.com/watchlater",  # 稍后再看
+            r"bilibili\.com/bangumi/play/ss\d+",  # 番剧系列
+            r"bilibili\.com/bangumi/media/md\d+",  # 番剧媒体
+            r"space\.bilibili\.com/\d+/channel/index",  # 频道主页
+            r"space\.bilibili\.com/\d+/video",  # 用户投稿
         ]
         
         for i, pattern in enumerate(collection_patterns):
             if re.search(pattern, url):
-                pattern_names = ["收藏夹", "合集", "播放列表", "系列"]
+                pattern_names = ["收藏夹", "合集", "系列", "播放列表", "稍后再看", "稍后再看", 
+                               "番剧系列", "番剧媒体", "频道", "用户投稿"]
                 logger.info(f"✅ 检测到B站{pattern_names[i]}链接: {pattern}")
                 return True
         
@@ -318,6 +347,12 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
             'Referer': 'https://www.bilibili.com/'
         }
         
+        # 添加登录cookie支持
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie获取合集信息")
+            headers['Cookie'] = bilibili_cookie
+        
         response = requests.get(api_url, headers=headers, timeout=10)
         
         if response.status_code == 200:
@@ -334,28 +369,64 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                     season_id = season_info.get('id')
                     season_title = season_info.get('title', '未知合集')
                     
-                    logger.info(f"✅ 发现UGC合集: {season_title} (ID: {season_id})")
+                    logger.info(f"✅ 发现UGC-Season合集: {season_title} (ID: {season_id})")
                     
-                    # 获取合集中的所有视频
-                    if 'owner' in video_data:
-                        owner_mid = video_data['owner'].get('mid', 0)
-                        collection_api_url = f"https://api.bilibili.com/x/polymer/space/seasons_archives_list?mid={owner_mid}&season_id={season_id}&sort_reverse=false&page_num=1&page_size={max_videos}"
+                    # 处理正片和花絮等
+                    sections = season_info.get('sections', [])
+                    if not sections and 'main_section' in season_info:
+                        sections = [season_info['main_section']]
+                    
+                    for section in sections:
+                        episodes = section.get('episodes', [])
+                        logger.info(f"📹 番剧章节包含 {len(episodes)} 个剧集")
                         
-                        collection_response = requests.get(collection_api_url, headers=headers, timeout=10)
+                        for episode in episodes:
+                            if episode.get('bvid') and episode.get('title'):
+                                episode_url = f"https://www.bilibili.com/video/{episode['bvid']}"
+                                episode_title = f"{episode.get('title', '')}"
+                                videos.append((episode_url, episode_title.strip()))
                         
-                        if collection_response.status_code == 200:
-                            collection_data = collection_response.json()
+                    if videos:
+                        logger.info(f"✅ 成功提取番剧合集 {len(videos)} 个剧集")
+                        return videos
+                
+                # 方法1.5: 处理番剧/电影合集（season字段）
+                if 'season' in video_data and video_data['season']:
+                    season_info = video_data['season']
+                    season_id = season_info.get('season_id')
+                    season_title = season_info.get('title', '未知番剧')
+                    
+                    logger.info(f"✅ 发现番剧合集: {season_title} (Season ID: {season_id})")
+                    
+                    # 获取番剧的所有剧集
+                    bangumi_api_url = f"https://api.bilibili.com/pgc/web/season/section?season_id={season_id}"
+                    bangumi_headers = headers.copy()
+                    if bilibili_cookie:
+                        bangumi_headers['Cookie'] = bilibili_cookie
+                    bangumi_response = requests.get(bangumi_api_url, headers=bangumi_headers, timeout=10)
+                    
+                    if bangumi_response.status_code == 200:
+                        bangumi_data = bangumi_response.json()
+                        
+                        if bangumi_data.get('code') == 0 and 'result' in bangumi_data:
+                            result = bangumi_data['result']
+                            # 处理正片和花絮等
+                            sections = result.get('section', [])
+                            if not sections and 'main_section' in result:
+                                sections = [result['main_section']]
                             
-                            if collection_data.get('code') == 0 and 'data' in collection_data and 'archives' in collection_data['data']:
-                                archives = collection_data['data']['archives']
-                                logger.info(f"📹 UGC合集包含 {len(archives)} 个视频")
+                            for section in sections:
+                                episodes = section.get('episodes', [])
+                                logger.info(f"📹 番剧章节包含 {len(episodes)} 个剧集")
                                 
-                                for archive in archives:
-                                    if archive.get('bvid') and archive.get('title'):
-                                        video_url = f"https://www.bilibili.com/video/{archive['bvid']}"
-                                        videos.append((video_url, archive['title']))
+                                for episode in episodes:
+                                    if episode.get('bvid') and episode.get('long_title'):
+                                        episode_url = f"https://www.bilibili.com/video/{episode['bvid']}"
+                                        episode_title = f"{episode.get('title', '')} {episode.get('long_title', '')}"
+                                        videos.append((episode_url, episode_title.strip()))
                                 
-                                logger.info(f"✅ 成功提取UGC合集 {len(videos)} 个视频")
+                            if videos:
+                                logger.info(f"✅ 成功提取番剧合集 {len(videos)} 个剧集")
                                 return videos
                 
                 # 方法2: 处理多分P视频
@@ -494,6 +565,49 @@ def _extract_bilibili_collection_by_api(url: str, max_videos: int = 50) -> List[
                 videos = _fetch_bilibili_collection_videos(api_url)
             else:
                 logger.error("❌ 无法从合集URL中提取sid")
+                
+        elif "seriesdetail" in url:
+            # 系列
+            logger.info("📚 处理系列链接...")
+            sid_match = re.search(r"sid=(\d+)", url)
+            if sid_match:
+                sid = sid_match.group(1)
+                logger.info(f"📖 系列ID: {sid}")
+                api_url = f"https://api.bilibili.com/x/polymer/space/seasons_archives_list?mid=0&season_id={sid}&sort_reverse=false&page_num=1&page_size={max_videos}"
+                videos = _fetch_bilibili_collection_videos(api_url)
+            else:
+                logger.error("❌ 无法从系列URL中提取sid")
+                
+        elif "watchlater" in url:
+            # 稍后再看
+            logger.info("⏰ 处理稍后再看...")
+            api_url = f"https://api.bilibili.com/x/v2/history/toview?ps={max_videos}&pn=1"
+            videos = _fetch_bilibili_watchlater_videos(api_url)
+            
+        elif "bangumi/play/ss" in url:
+            # 番剧系列
+            logger.info("🎭 处理番剧系列...")
+            ss_match = re.search(r"ss(\d+)", url)
+            if ss_match:
+                ss_id = ss_match.group(1)
+                logger.info(f"🎭 番剧系列ID: {ss_id}")
+                api_url = f"https://api.bilibili.com/pgc/web/season/section?season_id={ss_id}"
+                videos = _fetch_bilibili_bangumi_videos(api_url)
+            else:
+                logger.error("❌ 无法从番剧URL中提取ss_id")
+                
+        elif "bangumi/media/md" in url:
+            # 番剧媒体
+            logger.info("🎭 处理番剧媒体...")
+            md_match = re.search(r"md(\d+)", url)
+            if md_match:
+                md_id = md_match.group(1)
+                logger.info(f"🎭 番剧媒体ID: {md_id}")
+                # 先获取season_id，再获取剧集列表
+                media_api_url = f"https://api.bilibili.com/pgc/review/user?media_id={md_id}"
+                videos = _fetch_bilibili_bangumi_by_media_id(media_api_url, max_videos)
+            else:
+                logger.error("❌ 无法从番剧媒体URL中提取md_id")
         else:
             logger.warning("⚠️ 未识别的B站合集类型")
                 
@@ -512,8 +626,15 @@ def _fetch_bilibili_favlist_videos(api_url: str) -> List[Tuple[str, str]]:
     
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.bilibili.com/'
         }
+        
+        # 添加登录cookie支持，用于访问私人收藏夹
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie访问收藏夹")
+            headers['Cookie'] = bilibili_cookie
         
         response = requests.get(api_url, headers=headers)
         logger.info(f"📡 API响应状态: {response.status_code}")
@@ -549,8 +670,15 @@ def _fetch_bilibili_collection_videos(api_url: str) -> List[Tuple[str, str]]:
     
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.bilibili.com/'
         }
+        
+        # 添加登录cookie支持，用于访问需要权限的合集
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie访问合集")
+            headers['Cookie'] = bilibili_cookie
         
         response = requests.get(api_url, headers=headers)
         logger.info(f"📡 API响应状态: {response.status_code}")
@@ -573,6 +701,150 @@ def _fetch_bilibili_collection_videos(api_url: str) -> List[Tuple[str, str]]:
                     
     except Exception as e:
         logger.error(f"❌ 获取B站合集视频失败: {e}")
+        
+    return videos
+
+
+def _fetch_bilibili_watchlater_videos(api_url: str) -> List[Tuple[str, str]]:
+    """
+    获取B站稍后再看视频列表
+    """
+    logger.info(f"📡 请求稍后再看API: {api_url}")
+    videos = []
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.bilibili.com/'
+        }
+        
+        # 稍后再看需要登录cookie
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie访问稍后再看")
+            headers['Cookie'] = bilibili_cookie
+        else:
+            logger.warning("⚠️ 稍后再看需要登录，但未找到有效cookie")
+            return videos
+        
+        response = requests.get(api_url, headers=headers)
+        logger.info(f"📡 API响应状态: {response.status_code}")
+        
+        data = response.json()
+        logger.info(f"📊 API响应数据: code={data.get('code')}, message={data.get('message', 'N/A')}")
+        
+        if data.get('code') == 0 and 'data' in data and 'list' in data['data']:
+            video_list = data['data']['list']
+            logger.info(f"📹 稍后再看包含 {len(video_list)} 个视频")
+            
+            for video in video_list:
+                if video.get('bvid') and video.get('title'):
+                    video_url = f"https://www.bilibili.com/video/{video['bvid']}"
+                    videos.append((video_url, video['title']))
+            
+            logger.info(f"✅ 成功提取 {len(videos)} 个稍后再看视频")
+        else:
+            logger.error(f"❌ 稍后再看API返回错误: {data}")
+                    
+    except Exception as e:
+        logger.error(f"❌ 获取B站稍后再看视频失败: {e}")
+        
+    return videos
+
+
+def _fetch_bilibili_bangumi_videos(api_url: str) -> List[Tuple[str, str]]:
+    """
+    获取B站番剧视频列表
+    """
+    logger.info(f"📡 请求番剧API: {api_url}")
+    videos = []
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.bilibili.com/'
+        }
+        
+        # 添加登录cookie支持（部分番剧需要大会员）
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie访问番剧")
+            headers['Cookie'] = bilibili_cookie
+        
+        response = requests.get(api_url, headers=headers)
+        logger.info(f"📡 API响应状态: {response.status_code}")
+        
+        data = response.json()
+        logger.info(f"📊 API响应数据: code={data.get('code')}, message={data.get('message', 'N/A')}")
+        
+        if data.get('code') == 0 and 'result' in data:
+            result = data['result']
+            # 处理正片和花絮等
+            sections = result.get('section', [])
+            if not sections and 'main_section' in result:
+                sections = [result['main_section']]
+            
+            for section in sections:
+                episodes = section.get('episodes', [])
+                logger.info(f"📹 番剧章节包含 {len(episodes)} 个剧集")
+                
+                for episode in episodes:
+                    if episode.get('bvid') and episode.get('long_title'):
+                        episode_url = f"https://www.bilibili.com/video/{episode['bvid']}"
+                        episode_title = f"{episode.get('title', '')} {episode.get('long_title', '')}"
+                        videos.append((episode_url, episode_title.strip()))
+            
+            logger.info(f"✅ 成功提取 {len(videos)} 个番剧剧集")
+        else:
+            logger.error(f"❌ 番剧API返回错误: {data}")
+                    
+    except Exception as e:
+        logger.error(f"❌ 获取B站番剧视频失败: {e}")
+        
+    return videos
+
+
+def _fetch_bilibili_bangumi_by_media_id(api_url: str, max_videos: int = 50) -> List[Tuple[str, str]]:
+    """
+    通过媒体ID获取B站番剧视频列表
+    """
+    logger.info(f"📡 请求番剧媒体API: {api_url}")
+    videos = []
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.bilibili.com/'
+        }
+        
+        # 添加登录cookie支持
+        bilibili_cookie = cookie_manager.get("bilibili")
+        if bilibili_cookie:
+            logger.info("🍪 使用已保存的B站登录cookie访问番剧媒体")
+            headers['Cookie'] = bilibili_cookie
+        
+        response = requests.get(api_url, headers=headers)
+        logger.info(f"📡 API响应状态: {response.status_code}")
+        
+        data = response.json()
+        logger.info(f"📊 API响应数据: code={data.get('code')}")
+        
+        if data.get('code') == 0 and 'result' in data and 'media' in data['result']:
+            media_info = data['result']['media']
+            season_id = media_info.get('season_id')
+            
+            if season_id:
+                logger.info(f"🎭 获取到番剧season_id: {season_id}")
+                # 使用season_id获取剧集列表
+                season_api_url = f"https://api.bilibili.com/pgc/web/season/section?season_id={season_id}"
+                videos = _fetch_bilibili_bangumi_videos(season_api_url)
+            else:
+                logger.error("❌ 无法从番剧媒体信息中获取season_id")
+        else:
+            logger.error(f"❌ 番剧媒体API返回错误: {data}")
+                    
+    except Exception as e:
+        logger.error(f"❌ 获取B站番剧媒体视频失败: {e}")
         
     return videos
 
