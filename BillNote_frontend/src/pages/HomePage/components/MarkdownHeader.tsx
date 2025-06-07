@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Badge } from '@/components/ui/badge'
+import NotionExport from '@/components/NotionExport'
+import { useTaskStore } from '@/store/taskStore'
 
 interface VersionNote {
   ver_id: string
@@ -17,6 +19,9 @@ interface VersionNote {
 interface NoteHeaderProps {
   currentTask?: {
     markdown: VersionNote[] | string
+    audioMeta?: {
+      title?: string
+    }
   }
   isMultiVersion: boolean
   currentVerId: string
@@ -28,6 +33,9 @@ interface NoteHeaderProps {
   onDownload: () => void
   createAt?: string | Date
   setShowTranscribe: (show: boolean) => void
+  showTranscribe: boolean
+  viewMode: 'map' | 'preview'
+  setViewMode: (mode: 'map' | 'preview') => void
 }
 
 export function MarkdownHeader({
@@ -47,6 +55,7 @@ export function MarkdownHeader({
   setViewMode,
 }: NoteHeaderProps) {
   const [copied, setCopied] = useState(false)
+  const currentTaskId = useTaskStore(state => state.currentTaskId)
 
   useEffect(() => {
     let timer: NodeJS.Timeout
@@ -183,6 +192,15 @@ export function MarkdownHeader({
             <TooltipContent>原文参照</TooltipContent>
           </Tooltip>
         </TooltipProvider>
+
+        {/* Notion导出按钮 */}
+        {currentTaskId && (
+          <NotionExport
+            taskId={currentTaskId}
+            noteTitle={currentTask?.audioMeta?.title || '未命名笔记'}
+            disabled={false}
+          />
+        )}
       </div>
     </div>
   )

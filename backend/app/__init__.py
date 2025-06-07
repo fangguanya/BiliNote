@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from .routers import note, provider, model, config, auth
+from .routers import note, provider, model, config, auth, notion
 
 
 def create_app(lifespan=None) -> FastAPI:
@@ -9,4 +9,5 @@ def create_app(lifespan=None) -> FastAPI:
     app.include_router(model.router,prefix="/api")
     app.include_router(config.router,  prefix="/api")
     app.include_router(auth.router, prefix="/api")
+    app.include_router(notion.router, prefix="/api/notion")
     return app
