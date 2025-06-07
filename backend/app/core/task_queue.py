@@ -89,6 +89,93 @@ class TaskQueue:
         with self._lock:
             return self.tasks.copy()
             
+    def retry_task(self, task_id: str) -> bool:
+        """重试任务（支持重试任何非SUCCESS状态的任务）"""
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                logger.warning(f"⚠️ 任务不存在，无法重试: {task_id}")
+                return False
+            
+            if task.status == TaskStatus.SUCCESS:
+                logger.warning(f"⚠️ 任务已成功完成，无需重试: {task_id}")
+                return False
+            
+            # 重置任务状态
+            task.status = TaskStatus.PENDING
+            task.started_at = None
+            task.completed_at = None
+            task.error_message = None
+            task.result = None
+            
+            # 重新提交到队列
+            self.task_queue.put(task)
+            
+        logger.info(f"🔄 任务已重新提交到队列: {task_id}")
+        return True
+        
+    def batch_retry_failed_tasks(self) -> dict:
+        """批量重试所有失败的任务"""
+        with self._lock:
+            failed_tasks = [task for task in self.tasks.values() if task.status == TaskStatus.FAILED]
+            
+            if not failed_tasks:
+                logger.info("📝 没有找到失败的任务")
+                return {"retried_count": 0, "total_failed": 0, "message": "没有需要重试的失败任务"}
+            
+            retried_count = 0
+            for task in failed_tasks:
+                # 重置任务状态
+                task.status = TaskStatus.PENDING
+                task.started_at = None
+                task.completed_at = None
+                task.error_message = None
+                task.result = None
+                
+                # 重新提交到队列
+                self.task_queue.put(task)
+                retried_count += 1
+                
+        logger.info(f"🔄 批量重试完成，重试了 {retried_count} 个失败任务")
+        return {
+            "retried_count": retried_count, 
+            "total_failed": len(failed_tasks),
+            "message": f"成功重试 {retried_count} 个失败任务"
+        }
+        
+    def force_retry_all_tasks(self, new_task_data: dict = None) -> dict:
+        """强制重试所有任务，使用最新配置"""
+        with self._lock:
+            all_tasks = list(self.tasks.values())
+            
+            if not all_tasks:
+                logger.info("📝 没有找到任何任务")
+                return {"retried_count": 0, "total_tasks": 0, "message": "没有任务可以重试"}
+            
+            retried_count = 0
+            for task in all_tasks:
+                # 如果提供了新的任务数据，更新任务配置
+                if new_task_data:
+                    task.data.update(new_task_data)
+                
+                # 重置任务状态
+                task.status = TaskStatus.PENDING
+                task.started_at = None
+                task.completed_at = None
+                task.error_message = None
+                task.result = None
+                
+                # 重新提交到队列
+                self.task_queue.put(task)
+                retried_count += 1
+                
+        logger.info(f"🔄 强制批量重试完成，重试了 {retried_count} 个任务")
+        return {
+            "retried_count": retried_count, 
+            "total_tasks": len(all_tasks),
+            "message": f"成功强制重试 {retried_count} 个任务"
+        }
+        
     def _worker(self):
         """工作线程主循环"""
         worker_name = threading.current_thread().name

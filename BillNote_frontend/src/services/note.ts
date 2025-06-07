@@ -137,3 +137,91 @@ export const get_task_status = async (task_id: string) => {
     throw e // 抛出错误以便调用方处理
   }
 }
+
+export const retry_task = async (task_id: string) => {
+  try {
+    const response = await request.post(`/retry_task/${task_id}`)
+    
+    if (response.data.code === 0) {
+      toast.success('任务重试成功，请等待处理')
+      return response.data
+    } else {
+      toast.error(response.data.message || '重试失败')
+      throw new Error(response.data.message || '重试失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 重试任务失败:', e)
+    toast.error('重试任务失败，请稍后重试')
+    throw e
+  }
+}
+
+// 批量重试失败任务
+export const batch_retry_failed_tasks = async () => {
+  try {
+    const response = await request.post('/batch_retry_failed')
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      if (result.retried_count > 0) {
+        toast.success(`成功重试 ${result.retried_count} 个失败任务`)
+      } else {
+        toast('没有需要重试的失败任务')
+      }
+      return result
+    } else {
+      toast.error(response.data.message || '批量重试失败')
+      throw new Error(response.data.message || '批量重试失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 批量重试失败任务出错:', e)
+    toast.error('批量重试失败，请稍后重试')
+    throw e
+  }
+}
+
+// 强制重试所有任务
+export const force_retry_all_tasks = async (config?: {
+  model_name?: string
+  provider_id?: string
+  style?: string
+  format?: string[]
+  video_understanding?: boolean
+  video_interval?: number
+}) => {
+  try {
+    const response = await request.post('/force_retry_all', config || {})
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      toast.success(`成功强制重试 ${result.retried_count} 个任务`)
+      return result
+    } else {
+      toast.error(response.data.message || '强制重试失败')
+      throw new Error(response.data.message || '强制重试失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 强制重试所有任务出错:', e)
+    toast.error('强制重试失败，请稍后重试')
+    throw e
+  }
+}
+
+// 强制重试单个任务
+export const force_retry_task = async (task_id: string) => {
+  try {
+    const response = await request.post(`/force_retry_task/${task_id}`)
+    
+    if (response.data.code === 0) {
+      toast.success('任务强制重试成功，请等待处理')
+      return response.data
+    } else {
+      toast.error(response.data.message || '强制重试失败')
+      throw new Error(response.data.message || '强制重试失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 强制重试任务失败:', e)
+    toast.error('强制重试任务失败，请稍后重试')
+    throw e
+  }
+}

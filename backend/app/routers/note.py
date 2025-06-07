@@ -605,3 +605,146 @@ def get_recent_tasks(limit: int = 50):
     except Exception as e:
         logger.error(f"❌ 获取最近任务失败: {e}")
         return R.error(f"获取最近任务失败: {str(e)}")
+
+@router.post("/retry_task/{task_id}")
+def retry_task(task_id: str):
+    """重试失败的任务"""
+    try:
+        # 首先检查任务队列中是否存在该任务
+        queue_task = task_queue.get_task_status(task_id)
+        if queue_task:
+            # 在任务队列中重试
+            success = task_queue.retry_task(task_id)
+            if success:
+                logger.info(f"✅ 任务重试成功: {task_id}")
+                return R.success({
+                    "message": "任务已重新提交，请等待处理",
+                    "task_id": task_id
+                })
+            else:
+                return R.error("任务重试失败，请检查任务状态")
+        
+        # 任务队列中没有，检查文件系统中的任务
+        status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
+        if os.path.exists(status_path):
+            with open(status_path, "r", encoding="utf-8") as f:
+                status_content = json.load(f)
+            
+            status = status_content.get("status")
+            if status == TaskStatus.FAILED.value:
+                # 从文件系统中读取原始任务数据并重新提交
+                # 这需要有存储原始请求参数的机制
+                logger.warning(f"⚠️ 任务 {task_id} 在文件系统中，但无法直接重试。建议重新提交新任务。")
+                return R.error("该任务无法直接重试，请重新提交新任务")
+            else:
+                return R.error(f"任务状态不是失败状态，无法重试 (当前状态: {status})")
+        
+        return R.error("任务不存在")
+        
+    except Exception as e:
+        logger.error(f"❌ 重试任务失败: {e}")
+        return R.error(f"重试任务失败: {str(e)}")
+
+@router.post("/batch_retry_failed")
+def batch_retry_failed_tasks():
+    """批量重试所有失败的任务"""
+    try:
+        result = task_queue.batch_retry_failed_tasks()
+        logger.info(f"✅ 批量重试失败任务完成: {result}")
+        
+        if result["retried_count"] > 0:
+            return R.success({
+                "retried_count": result["retried_count"],
+                "total_failed": result["total_failed"],
+                "message": result["message"]
+            })
+        else:
+            return R.success({
+                "retried_count": 0,
+                "total_failed": 0,
+                "message": "没有需要重试的失败任务"
+            })
+        
+    except Exception as e:
+        logger.error(f"❌ 批量重试失败任务出错: {e}")
+        return R.error(f"批量重试失败: {str(e)}")
+
+class ForceRetryRequest(BaseModel):
+    """强制重试请求模型"""
+    model_name: Optional[str] = None
+    provider_id: Optional[str] = None
+    style: Optional[str] = None
+    format: Optional[list] = None
+    video_understanding: Optional[bool] = None
+    video_interval: Optional[int] = None
+
+@router.post("/force_retry_all")
+def force_retry_all_tasks(request: Optional[ForceRetryRequest] = None):
+    """强制重试所有任务，使用最新配置"""
+    try:
+        # 构建新的任务配置
+        new_task_data = {}
+        if request:
+            if request.model_name:
+                new_task_data['model_name'] = request.model_name
+            if request.provider_id:
+                new_task_data['provider_id'] = request.provider_id
+            if request.style:
+                new_task_data['style'] = request.style
+            if request.format:
+                new_task_data['format'] = request.format
+            if request.video_understanding is not None:
+                new_task_data['video_understanding'] = request.video_understanding
+            if request.video_interval is not None:
+                new_task_data['video_interval'] = request.video_interval
+        
+        result = task_queue.force_retry_all_tasks(new_task_data if new_task_data else None)
+        logger.info(f"✅ 强制批量重试所有任务完成: {result}")
+        
+        return R.success({
+            "retried_count": result["retried_count"],
+            "total_tasks": result["total_tasks"],
+            "message": result["message"],
+            "updated_config": new_task_data
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ 强制批量重试所有任务出错: {e}")
+        return R.error(f"强制批量重试失败: {str(e)}")
+
+@router.post("/force_retry_task/{task_id}")
+def force_retry_task(task_id: str):
+    """强制重试单个任务（包括成功状态的任务）"""
+    try:
+        from app.core.task_queue import TaskStatus as QueueTaskStatus
+        
+        # 首先检查任务队列中是否存在该任务
+        queue_task = task_queue.get_task_status(task_id)
+        if queue_task:
+            # 强制重试，不检查状态
+            with task_queue._lock:
+                task = task_queue.tasks.get(task_id)
+                if task:
+                    # 重置任务状态
+                    task.status = QueueTaskStatus.PENDING
+                    task.started_at = None
+                    task.completed_at = None
+                    task.error_message = None
+                    task.result = None
+                    
+                    # 重新提交到队列
+                    task_queue.task_queue.put(task)
+                    
+                    logger.info(f"✅ 强制重试任务成功: {task_id}")
+                    return R.success({
+                        "message": "任务已强制重新提交，请等待处理",
+                        "task_id": task_id
+                    })
+                else:
+                    return R.error("任务不存在")
+        
+        return R.error("任务不存在于队列中")
+        
+    except Exception as e:
+        logger.error(f"❌ 强制重试任务失败: {e}")
+        return R.error(f"强制重试任务失败: {str(e)}")

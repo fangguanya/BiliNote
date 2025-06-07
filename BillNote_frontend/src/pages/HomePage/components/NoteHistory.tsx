@@ -2,7 +2,7 @@ import { useTaskStore } from '@/store/taskStore'
 import { ScrollArea } from '@/components/ui/scroll-area.tsx'
 import { Badge } from '@/components/ui/badge.tsx'
 import { cn } from '@/lib/utils.ts'
-import { Trash } from 'lucide-react'
+import { Trash, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button.tsx'
 import PinyinMatch from 'pinyin-match'
 import Fuse from 'fuse.js'
@@ -24,6 +24,7 @@ interface NoteHistoryProps {
 const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
   const tasks = useTaskStore(state => state.tasks)
   const removeTask = useTaskStore(state => state.removeTask)
+  const retryTask = useTaskStore(state => state.retryTask)
   const [rawSearch, setRawSearch] = useState('')
   const [search, setSearch] = useState('')
   const fuse = new Fuse(tasks, {
@@ -141,18 +142,44 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                     运行中
                   </div>
                 )}
-                {(task.status !== 'SUCCESS' && task.status !== 'FAILD' && 
+                {(task.status !== 'SUCCESS' && task.status !== 'FAILED' && 
                   task.status !== 'PENDING' && task.status !== 'RUNNING') && (
                   <div className={'w-10 rounded bg-green-500 p-0.5 text-center text-white'}>
                     处理中
                   </div>
                 )}
-                {task.status === 'FAILD' && (
+                {task.status === 'FAILED' && (
                   <div className={'w-10 rounded bg-red-500 p-0.5 text-center text-white'}>失败</div>
                 )}
               </div>
 
-              <div>
+              <div className="flex items-center gap-1">
+                {/* 重试按钮 - 只对非成功状态显示 */}
+                {task.status !== 'SUCCESS' && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={e => {
+                            e.stopPropagation()
+                            retryTask(task.id)
+                          }}
+                          className="shrink-0"
+                        >
+                          <RotateCcw className="text-blue-500 h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>重试</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+                
+                {/* 删除按钮 */}
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>

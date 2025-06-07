@@ -354,7 +354,7 @@ const NoteForm = () => {
                 </p>
               </div>
             </div>
-            {currentTask.status === 'FAILED' && (
+            {currentTask.status !== 'SUCCESS' && (
               <Button size="sm" variant="outline" onClick={() => form.handleSubmit(onSubmit)()}>
                 重试
               </Button>

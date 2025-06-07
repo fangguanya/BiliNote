@@ -526,34 +526,89 @@ class NotionService:
                     current_paragraph = []
                 continue
             
-            # 图片处理 - 支持带星号前缀和后缀的格式，如: *![](/static/screenshots/...)*
-            # 匹配模式: 可选的星号(*) + 图片markdown语法 + 可选的星号(*)
-            image_match = re.match(r'^\*?\s*!\[([^\]]*)\]\(([^)]+)\)\s*\*?$', line.strip())
-            if image_match:
+            # 处理包含内联图片的行
+            # 先提取所有图片，然后处理剩余文本
+            image_pattern = r'\*?\s*!\[([^\]]*)\]\(([^)]+)\)\s*\*?'
+            images_in_line = list(re.finditer(image_pattern, line))
+            
+            if images_in_line:
+                # 如果有当前段落，先保存
                 if current_paragraph:
                     blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
                     current_paragraph = []
                 
-                alt_text = image_match.group(1)
-                image_url = image_match.group(2)
+                # 处理行中的文本和图片
+                last_end = 0
+                line_parts = []
                 
-                logger.info(f"🖼️ 处理图片: {image_url}, alt_text: '{alt_text}'")
-                logger.debug(f"📁 当前工作目录: {os.getcwd()}")
+                for image_match in images_in_line:
+                    # 添加图片前的文本
+                    before_text = line[last_end:image_match.start()].strip()
+                    if before_text:
+                        line_parts.append(('text', before_text))
+                    
+                    # 添加图片信息
+                    alt_text = image_match.group(1)
+                    image_url = image_match.group(2)
+                    line_parts.append(('image', alt_text, image_url))
+                    
+                    last_end = image_match.end()
                 
-                # 上传图片到Notion并创建图片块
-                file_upload_id = self.upload_file_to_notion(image_url)
-                if file_upload_id:
-                    logger.info(f"✅ 图片上传成功，创建file_upload图片块")
-                    blocks.append(self._create_image_block_with_upload(file_upload_id, alt_text))
-                else:
-                    # 如果上传失败，创建一个带有错误信息的段落而不是外部链接
-                    logger.warning(f"⚠️ 图片上传失败，将作为文本段落处理: {image_url}")
-                    error_text = f"[图片上传失败: {os.path.basename(image_url)}]"
-                    if alt_text:
-                        error_text = f"[图片上传失败: {alt_text} - {os.path.basename(image_url)}]"
-                    blocks.append(self._create_paragraph_block(error_text))
+                # 添加图片后的文本
+                after_text = line[last_end:].strip()
+                if after_text:
+                    line_parts.append(('text', after_text))
+                
+                # 根据解析结果创建块
+                for part in line_parts:
+                    if part[0] == 'text':
+                        text_content = part[1]
+                        # 检查是否是标题
+                        if text_content.startswith('#'):
+                            level = len(text_content) - len(text_content.lstrip('#'))
+                            level = min(level, 3)
+                            title_text = text_content.lstrip('#').strip()
+                            
+                            if level == 1:
+                                blocks.append(self._create_heading_1_block(title_text))
+                            elif level == 2:
+                                blocks.append(self._create_heading_2_block(title_text))
+                            else:
+                                blocks.append(self._create_heading_3_block(title_text))
+                        # 检查是否是列表
+                        elif text_content.startswith('- ') or text_content.startswith('* '):
+                            list_text = text_content[2:].strip()
+                            blocks.append(self._create_bulleted_list_block(list_text))
+                        elif re.match(r'^\d+\.\s', text_content):
+                            list_text = re.sub(r'^\d+\.\s', '', text_content)
+                            blocks.append(self._create_numbered_list_block(list_text))
+                        # 检查是否是引用
+                        elif text_content.startswith('>'):
+                            quote_text = text_content[1:].strip()
+                            blocks.append(self._create_quote_block(quote_text))
+                        else:
+                            # 普通段落
+                            blocks.append(self._create_paragraph_block(text_content))
+                    
+                    elif part[0] == 'image':
+                        alt_text, image_url = part[1], part[2]
+                        logger.info(f"🖼️ 处理内联图片: {image_url}, alt_text: '{alt_text}'")
+                        
+                        # 上传图片到Notion并创建图片块
+                        file_upload_id = self.upload_file_to_notion(image_url)
+                        if file_upload_id:
+                            logger.info(f"✅ 图片上传成功，创建file_upload图片块")
+                            blocks.append(self._create_image_block_with_upload(file_upload_id, alt_text))
+                        else:
+                            # 如果上传失败，创建一个带有错误信息的段落
+                            logger.warning(f"⚠️ 图片上传失败，将作为文本段落处理: {image_url}")
+                            error_text = f"[图片上传失败: {os.path.basename(image_url)}]"
+                            if alt_text:
+                                error_text = f"[图片上传失败: {alt_text} - {os.path.basename(image_url)}]"
+                            blocks.append(self._create_paragraph_block(error_text))
                 continue
             
+            # 如果没有图片，按原有逻辑处理
             # 标题处理
             if line.startswith('#'):
                 if current_paragraph:

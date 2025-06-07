@@ -213,24 +213,27 @@ export const useTaskStore = create<TaskStore>()(
         const task = get().tasks.find(task => task.id === id)
         if (!task) return
 
-        const newFormData = payload || task.formData
-
-        await generateNote({
-          task_id: id,
-          ...newFormData,
-        })
-
-        set(state => ({
-          tasks: state.tasks.map(t =>
-              t.id === id
-                  ? {
-                    ...t,
-                    formData: newFormData, // ✅ 显式更新 formData
-                    status: 'PENDING',
-                  }
-                  : t
-          ),
-        }))
+        try {
+          // 首先调用后端重试接口
+          const { retry_task } = await import('@/services/note')
+          await retry_task(id)
+          
+          // 重试成功，更新前端状态
+          set(state => ({
+            tasks: state.tasks.map(t =>
+                t.id === id
+                    ? {
+                      ...t,
+                      formData: payload || t.formData, // 如果有新的formData则更新
+                      status: 'PENDING',
+                    }
+                    : t
+            ),
+          }))
+        } catch (error) {
+          console.error('重试任务失败:', error)
+          // 重试失败，保持原状态或者可以显示错误信息
+        }
       },
 
 

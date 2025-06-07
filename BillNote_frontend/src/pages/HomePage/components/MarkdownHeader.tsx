@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Copy, Download, BrainCircuit, ExternalLink, CheckCircle } from 'lucide-react'
+import { Copy, Download, BrainCircuit, ExternalLink, CheckCircle, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -62,7 +62,9 @@ export function MarkdownHeader({
   setViewMode,
 }: NoteHeaderProps) {
   const [copied, setCopied] = useState(false)
+  const [isRetrying, setIsRetrying] = useState(false)
   const currentTaskId = useTaskStore(state => state.currentTaskId)
+  const retryTask = useTaskStore(state => state.retryTask)
 
   useEffect(() => {
     let timer: NodeJS.Timeout
@@ -75,6 +77,26 @@ export function MarkdownHeader({
   const handleCopy = () => {
     onCopy()
     setCopied(true)
+  }
+
+  const handleForceRetry = async () => {
+    if (!currentTaskId) return
+    
+    setIsRetrying(true)
+    try {
+      // 使用强制重试API，即使是成功状态的任务也能重试
+      const { force_retry_task } = await import('@/services/note')
+      await force_retry_task(currentTaskId)
+      
+      // 更新前端状态为PENDING
+      const updateTaskContent = useTaskStore.getState().updateTaskContent
+      updateTaskContent(currentTaskId, { status: 'PENDING' })
+      
+    } catch (error) {
+      console.error('强制重试失败:', error)
+    } finally {
+      setIsRetrying(false)
+    }
   }
 
   const styleName = noteStyles.find(v => v.value === style)?.label || style
@@ -200,6 +222,25 @@ export function MarkdownHeader({
               </Button>
             </TooltipTrigger>
             <TooltipContent>复制内容</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        {/* 强制重试按钮 */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button 
+                onClick={handleForceRetry} 
+                variant="ghost" 
+                size="sm" 
+                className="h-8 px-2"
+                disabled={isRetrying || !currentTaskId}
+              >
+                <Zap className={`mr-1.5 h-4 w-4 ${isRetrying ? 'animate-pulse' : ''}`} />
+                <span className="text-sm">{isRetrying ? '重试中...' : '强制重试'}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>强制重新生成此笔记</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
