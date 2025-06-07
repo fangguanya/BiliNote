@@ -44,6 +44,13 @@ export interface Task {
   audioMeta: AudioMeta
   createdAt: string
   platform: string
+  notion?: {
+    saved: boolean
+    pageId?: string
+    pageUrl?: string
+    savedAt?: string
+    autoSave?: boolean
+  }
   formData: {
     video_url: string
     link: undefined | boolean
@@ -59,6 +66,7 @@ export interface Task {
     video_interval?: number
     grid_size?: number[]
     max_collection_videos?: number
+    auto_save_notion?: boolean
   }
 }
 
@@ -73,6 +81,7 @@ interface TaskStore {
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
   retryTask: (id: string, payload?: any) => void
+  updateTaskNotion: (taskId: string, notionData: NonNullable<Task['notion']>) => void
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -246,6 +255,15 @@ export const useTaskStore = create<TaskStore>()(
       clearTasks: () => set({ tasks: [], currentTaskId: null }),
 
       setCurrentTask: taskId => set({ currentTaskId: taskId }),
+
+      updateTaskNotion: (taskId: string, notionData: NonNullable<Task['notion']>) =>
+        set(state => ({
+          tasks: state.tasks.map(task =>
+            task.id === taskId
+              ? { ...task, notion: notionData }
+              : task
+          )
+        })),
     }),
     {
       name: 'task-storage',

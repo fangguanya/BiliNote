@@ -5,6 +5,7 @@ import {
   HardDriveDownload,
   Wrench,
   Info,
+  FileText,
 } from 'lucide-react'
 import MenuBar, { IMenuProps } from '@/pages/SettingPage/components/menuBar.tsx'
 
@@ -29,6 +30,13 @@ const Menu = () => {
       name: '下载配置',
       icon: <HardDriveDownload />,
       path: '/settings/download',
+    },
+    // Notion集成配置
+    {
+      id: 'notion',
+      name: 'Notion 集成',
+      icon: <FileText />,
+      path: '/settings/notion',
     },
     // //其他配置
     // {

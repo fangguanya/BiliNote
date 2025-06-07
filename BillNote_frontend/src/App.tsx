@@ -15,6 +15,7 @@ import Prompt from '@/pages/SettingPage/Prompt.tsx'
 import AboutPage from '@/pages/SettingPage/about.tsx'
 import Downloader from '@/pages/SettingPage/Downloader.tsx'
 import DownloaderForm from '@/components/Form/DownloaderForm/Form.tsx'
+import NotionSettings from '@/pages/SettingPage/Notion.tsx'
 function App() {
   useTaskPolling(3000) // 每 3 秒轮询一次
   const steps = [
@@ -42,6 +43,7 @@ function App() {
               <Route path="download" element={<Downloader />}>
                 <Route path=":id" element={<DownloaderForm />} />
               </Route>
+              <Route path="notion" element={<NotionSettings />}></Route>
               <Route path="about" element={<AboutPage />}></Route>
 
               <Route path="*" element={<NotFoundPage />} />

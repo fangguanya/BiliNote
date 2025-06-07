@@ -54,6 +54,7 @@ const formSchema = z.object({
   video_interval: z.number().min(1).max(60).optional().default(4),
   grid_size: z.array(z.number()).optional().default([3, 3]),
   max_collection_videos: z.number().min(1).max(400).optional().default(200),
+  auto_save_notion: z.boolean().optional().default(false),
 })
 
 type NoteFormValues = z.infer<typeof formSchema>
@@ -128,6 +129,10 @@ const NoteForm = () => {
       grid_size: [3, 3],
       format: [],
       max_collection_videos: 200,
+      auto_save_notion: false,
+      screenshot: false,
+      link: false,
+      video_understanding: false,
     },
   })
   const currentTask = getCurrentTask()
@@ -159,6 +164,7 @@ const NoteForm = () => {
       grid_size: formData.grid_size ?? [3, 3],
       format: formData.format ?? [],
       max_collection_videos: formData.max_collection_videos ?? 200,
+      auto_save_notion: formData.auto_save_notion ?? false,
     })
   }, [currentTaskId, modelList.length, currentTask?.formData])
 
@@ -582,6 +588,40 @@ const NoteForm = () => {
                   />
                 </FormControl>
                 <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* Notion自动保存选项 */}
+          <FormField
+            control={form.control}
+            name="auto_save_notion"
+            render={({ field }) => (
+              <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                <FormControl>
+                  <Checkbox
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <div className="space-y-1 leading-none">
+                  <FormLabel className="flex items-center gap-2 cursor-pointer">
+                    自动保存到 Notion
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Info className="h-4 w-4 text-neutral-500" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>生成笔记完成后自动保存到您的 Notion 工作区</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </FormLabel>
+                  <p className="text-sm text-neutral-500">
+                    需要先在生成的笔记页面配置 Notion 连接
+                  </p>
+                </div>
               </FormItem>
             )}
           />

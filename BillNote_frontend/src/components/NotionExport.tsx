@@ -24,8 +24,12 @@ import {
   testNotionConnection, 
   getNotionDatabases, 
   saveNoteToNotion,
+  checkNotionHealth,
+  debugApiConnection,
   NotionDatabase 
 } from '@/services/notion'
+import { useTaskStore } from '@/store/taskStore'
+import { useSystemStore } from '@/store/configStore'
 
 interface NotionExportProps {
   taskId: string
@@ -38,45 +42,56 @@ const NotionExport: React.FC<NotionExportProps> = ({
   noteTitle = '未命名笔记', 
   disabled = false 
 }) => {
+  const { updateTaskNotion } = useTaskStore()
+  const { notionConfig } = useSystemStore()
   const [isOpen, setIsOpen] = useState(false)
-  const [token, setToken] = useState('')
   const [databases, setDatabases] = useState<NotionDatabase[]>([])
-  const [selectedDatabaseId, setSelectedDatabaseId] = useState<string>('')
+  const [selectedDatabaseId, setSelectedDatabaseId] = useState(notionConfig.defaultDatabaseId)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isLoadingDatabases, setIsLoadingDatabases] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
-  const [saveMode, setSaveMode] = useState<'database' | 'standalone'>('database')
+  const [saveMode, setSaveMode] = useState<'database' | 'standalone'>(notionConfig.defaultSaveMode)
 
-  // 从localStorage读取保存的token
+  // 检查配置并初始化
   useEffect(() => {
-    const savedToken = localStorage.getItem('notion_token')
-    if (savedToken) {
-      setToken(savedToken)
+    if (notionConfig.token) {
+      checkConnection()
+      setSelectedDatabaseId(notionConfig.defaultDatabaseId)
+      setSaveMode(notionConfig.defaultSaveMode)
     }
-  }, [])
+  }, [notionConfig])
 
-  // 测试连接
+  // 检查连接状态
+  const checkConnection = async () => {
+    if (!notionConfig.token) return
+    
+    try {
+      const result = await testNotionConnection(notionConfig.token)
+      setIsConnected(result?.connected || false)
+      if (result?.connected) {
+        await loadDatabases()
+      }
+    } catch (error) {
+      setIsConnected(false)
+    }
+  }
+
+  // 测试连接（如果没有配置，跳转到设置页面）
   const handleTestConnection = async () => {
-    if (!token.trim()) {
-      toast.error('请输入Notion令牌')
+    if (!notionConfig.token) {
+      toast.error('请先在设置中配置Notion令牌', {
+        action: {
+          label: '前往设置',
+          onClick: () => window.open('#/settings/notion', '_blank')
+        }
+      })
       return
     }
 
     setIsConnecting(true)
     try {
-      const result = await testNotionConnection(token.trim())
-      if (result?.connected) {
-        setIsConnected(true)
-        // 保存token到localStorage
-        localStorage.setItem('notion_token', token.trim())
-        // 自动加载数据库列表
-        await loadDatabases()
-      } else {
-        setIsConnected(false)
-      }
-    } catch (error) {
-      setIsConnected(false)
+      await checkConnection()
     } finally {
       setIsConnecting(false)
     }
@@ -84,11 +99,11 @@ const NotionExport: React.FC<NotionExportProps> = ({
 
   // 加载数据库列表
   const loadDatabases = async () => {
-    if (!token.trim()) return
+    if (!notionConfig.token) return
 
     setIsLoadingDatabases(true)
     try {
-      const databaseList = await getNotionDatabases(token.trim())
+      const databaseList = await getNotionDatabases(notionConfig.token)
       setDatabases(databaseList)
       if (databaseList.length === 0) {
         toast.info('未找到可用的数据库，建议创建独立页面')
@@ -103,8 +118,8 @@ const NotionExport: React.FC<NotionExportProps> = ({
 
   // 保存到Notion
   const handleSaveToNotion = async () => {
-    if (!token.trim()) {
-      toast.error('请输入Notion令牌')
+    if (!notionConfig.token) {
+      toast.error('请先在设置中配置Notion令牌')
       return
     }
 
@@ -117,11 +132,19 @@ const NotionExport: React.FC<NotionExportProps> = ({
     try {
       const result = await saveNoteToNotion({
         taskId,
-        token: token.trim(),
+        token: notionConfig.token,
         databaseId: saveMode === 'database' ? selectedDatabaseId : undefined
       })
 
       if (result) {
+        // 更新任务的Notion状态
+        updateTaskNotion(taskId, {
+          saved: true,
+          pageId: result.page_id,
+          pageUrl: result.url,
+          savedAt: new Date().toISOString()
+        })
+
         toast.success(
           <div className="flex flex-col gap-1">
             <span>笔记已保存到Notion！</span>
@@ -176,34 +199,51 @@ const NotionExport: React.FC<NotionExportProps> = ({
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Token输入 */}
-          <div className="space-y-2">
-            <Label htmlFor="token">Notion集成令牌</Label>
-            <div className="flex gap-2">
-              <Input
-                id="token"
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="输入你的Notion集成令牌"
-                className="flex-1"
-              />
+          {/* 配置状态检查 */}
+          {!notionConfig.token && (
+            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-center gap-2 text-yellow-800">
+                <FileText className="w-4 h-4" />
+                <span className="font-medium">需要配置Notion集成</span>
+              </div>
+              <p className="text-sm text-yellow-700 mt-1">
+                请先在设置中配置Notion令牌和默认保存方式
+              </p>
               <Button
-                onClick={handleTestConnection}
-                disabled={isConnecting || !token.trim()}
                 size="sm"
+                variant="outline"
+                className="mt-2"
+                onClick={() => window.open('#/settings/notion', '_blank')}
               >
-                {isConnecting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  '测试连接'
-                )}
+                前往设置
               </Button>
             </div>
-            {isConnected && (
-              <p className="text-sm text-green-600">✅ 连接成功</p>
-            )}
-          </div>
+          )}
+
+          {notionConfig.token && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">连接状态</span>
+                <Button
+                  onClick={handleTestConnection}
+                  disabled={isConnecting}
+                  size="sm"
+                  variant="outline"
+                >
+                  {isConnecting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    '重新检查'
+                  )}
+                </Button>
+              </div>
+              {isConnected ? (
+                <p className="text-sm text-green-600">✅ 已连接到Notion</p>
+              ) : (
+                <p className="text-sm text-red-600">❌ 连接失败，请检查配置</p>
+              )}
+            </div>
+          )}
 
           {/* 保存模式选择 */}
           {isConnected && (

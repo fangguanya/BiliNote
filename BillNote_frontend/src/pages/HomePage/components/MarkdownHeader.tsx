@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Copy, Download, BrainCircuit } from 'lucide-react'
+import { Copy, Download, BrainCircuit, ExternalLink, CheckCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -21,6 +21,13 @@ interface NoteHeaderProps {
     markdown: VersionNote[] | string
     audioMeta?: {
       title?: string
+    }
+    notion?: {
+      saved: boolean
+      pageId?: string
+      pageUrl?: string
+      savedAt?: string
+      autoSave?: boolean
     }
   }
   isMultiVersion: boolean
@@ -100,21 +107,27 @@ export function MarkdownHeader({
             <SelectTrigger className="h-8 w-[160px] text-sm">
               <div className="flex items-center">
                 {(() => {
-                  const idx = currentTask?.markdown.findIndex(v => v.ver_id === currentVerId)
-                  return idx !== -1 ? `版本（${currentVerId.slice(-6)}）` : ''
+                  const markdown = currentTask?.markdown
+                  if (Array.isArray(markdown)) {
+                    const idx = markdown.findIndex((v: VersionNote) => v.ver_id === currentVerId)
+                    return idx !== -1 ? `版本（${currentVerId.slice(-6)}）` : ''
+                  }
+                  return ''
                 })()}
               </div>
             </SelectTrigger>
 
             <SelectContent>
-              {(currentTask?.markdown || []).map((v, idx) => {
-                const shortId = v.ver_id.slice(-6)
-                return (
-                  <SelectItem key={v.ver_id} value={v.ver_id}>
-                    {`版本（${shortId}）`}
-                  </SelectItem>
-                )
-              })}
+              {Array.isArray(currentTask?.markdown) ? 
+                currentTask.markdown.map((v: VersionNote, idx: number) => {
+                  const shortId = v.ver_id.slice(-6)
+                  return (
+                    <SelectItem key={v.ver_id} value={v.ver_id}>
+                      {`版本（${shortId}）`}
+                    </SelectItem>
+                  )
+                }) : []
+              }
             </SelectContent>
           </Select>
         )}
@@ -128,6 +141,33 @@ export function MarkdownHeader({
 
         {createAt && (
           <div className="text-muted-foreground text-sm">创建时间: {formatDate(createAt)}</div>
+        )}
+
+        {/* Notion保存状态 */}
+        {currentTask?.notion?.saved && (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 hover:bg-green-100">
+              <CheckCircle className="w-3 h-3 mr-1" />
+              已保存到Notion
+            </Badge>
+            {currentTask.notion.pageUrl && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0"
+                      onClick={() => window.open(currentTask.notion!.pageUrl, '_blank')}
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>打开Notion页面</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
         )}
       </div>
 

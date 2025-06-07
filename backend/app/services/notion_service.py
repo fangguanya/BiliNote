@@ -1,5 +1,7 @@
 import os
 import re
+import requests
+import mimetypes
 from typing import Optional, Dict, Any, List
 from notion_client import Client
 from datetime import datetime
@@ -69,6 +71,23 @@ class NotionService:
             logger.error(f"获取数据库列表失败: {e}")
             return []
     
+    def _get_database_properties(self, database_id: str) -> Dict[str, Any]:
+        """
+        获取数据库的属性结构
+        
+        Args:
+            database_id: 数据库ID
+            
+        Returns:
+            Dict: 数据库属性信息
+        """
+        try:
+            response = self.client.databases.retrieve(database_id)
+            return response.get("properties", {})
+        except Exception as e:
+            logger.error(f"获取数据库属性失败: {e}")
+            return {}
+
     def create_page_in_database(self, database_id: str, note_result: NoteResult) -> Dict[str, Any]:
         """
         在指定数据库中创建页面
@@ -81,9 +100,21 @@ class NotionService:
             Dict: 创建结果
         """
         try:
+            # 获取数据库属性结构
+            db_properties = self._get_database_properties(database_id)
+            
             # 准备页面属性
-            properties = {
-                "Name": {
+            properties = {}
+            
+            # 寻找标题属性并设置
+            title_property = None
+            for prop_name, prop_config in db_properties.items():
+                if prop_config.get("type") == "title":
+                    title_property = prop_name
+                    break
+            
+            if title_property:
+                properties[title_property] = {
                     "title": [
                         {
                             "text": {
@@ -92,20 +123,58 @@ class NotionService:
                         }
                     ]
                 }
-            }
-            
-            # 添加可选属性
-            if hasattr(note_result.audio_meta, 'duration') and note_result.audio_meta.duration:
-                properties["时长"] = {
-                    "number": note_result.audio_meta.duration
+            else:
+                # 如果没有找到标题属性，使用Name作为默认
+                properties["Name"] = {
+                    "title": [
+                        {
+                            "text": {
+                                "content": note_result.audio_meta.title or "未命名笔记"
+                            }
+                        }
+                    ]
                 }
             
-            if hasattr(note_result.audio_meta, 'platform') and note_result.audio_meta.platform:
-                properties["平台"] = {
-                    "select": {
-                        "name": note_result.audio_meta.platform
+            # 智能匹配其他属性
+            for prop_name, prop_config in db_properties.items():
+                prop_type = prop_config.get("type")
+                prop_name_lower = prop_name.lower()
+                
+                # 匹配时长属性
+                if (prop_type == "number" and 
+                    ("时长" in prop_name or "duration" in prop_name_lower or "长度" in prop_name) and
+                    hasattr(note_result.audio_meta, 'duration') and note_result.audio_meta.duration):
+                    properties[prop_name] = {
+                        "number": note_result.audio_meta.duration
                     }
-                }
+                
+                # 匹配平台属性
+                elif (prop_type == "select" and 
+                      ("平台" in prop_name or "platform" in prop_name_lower or "来源" in prop_name) and
+                      hasattr(note_result.audio_meta, 'platform') and note_result.audio_meta.platform):
+                    properties[prop_name] = {
+                        "select": {
+                            "name": note_result.audio_meta.platform
+                        }
+                    }
+                
+                # 匹配URL属性
+                elif (prop_type == "url" and 
+                      ("url" in prop_name_lower or "链接" in prop_name or "地址" in prop_name) and
+                      hasattr(note_result.audio_meta, 'url') and note_result.audio_meta.url):
+                    properties[prop_name] = {
+                        "url": note_result.audio_meta.url
+                    }
+                
+                # 匹配日期属性
+                elif (prop_type == "date" and 
+                      ("日期" in prop_name or "date" in prop_name_lower or "创建" in prop_name)):
+                    from datetime import datetime
+                    properties[prop_name] = {
+                        "date": {
+                            "start": datetime.now().isoformat()
+                        }
+                    }
             
             # 准备页面内容
             children = self._markdown_to_notion_blocks(note_result.markdown)
@@ -207,6 +276,95 @@ class NotionService:
         
         return title_text or "未命名"
     
+    def _upload_image_to_notion(self, image_url: str) -> Optional[str]:
+        """
+        上传图片到Notion并返回Notion文件URL
+        
+        Args:
+            image_url: 图片URL（可以是本地路径或网络URL）
+            
+        Returns:
+            str: Notion文件URL，如果失败返回None
+        """
+        try:
+            # 判断是否为本地文件路径
+            if image_url.startswith('/static/') or image_url.startswith('./'):
+                # 本地文件路径，需要读取文件
+                local_path = image_url
+                if image_url.startswith('/static/'):
+                    local_path = f"static{image_url[7:]}"  # 移除/static前缀
+                elif image_url.startswith('./'):
+                    local_path = image_url[2:]  # 移除./前缀
+                
+                if not os.path.exists(local_path):
+                    logger.warning(f"本地图片文件不存在: {local_path}")
+                    return None
+                
+                # 读取本地文件
+                with open(local_path, 'rb') as f:
+                    file_content = f.read()
+                
+                # 获取文件类型
+                mime_type, _ = mimetypes.guess_type(local_path)
+                if not mime_type or not mime_type.startswith('image/'):
+                    logger.warning(f"不支持的图片格式: {local_path}")
+                    return None
+                
+                # 上传到Notion
+                filename = os.path.basename(local_path)
+                
+            else:
+                # 网络URL，下载后上传
+                response = requests.get(image_url, timeout=10)
+                response.raise_for_status()
+                
+                file_content = response.content
+                mime_type = response.headers.get('content-type', 'image/jpeg')
+                
+                if not mime_type.startswith('image/'):
+                    logger.warning(f"URL返回的不是图片: {image_url}")
+                    return None
+                
+                # 从URL提取文件名
+                filename = os.path.basename(image_url.split('?')[0]) or 'image.jpg'
+            
+            # 使用Notion API上传文件
+            # 注意：Notion API需要先创建页面，然后上传文件到页面
+            # 这里我们返回一个临时的标记，在实际创建页面时再处理
+            return f"NOTION_UPLOAD:{image_url}"
+            
+        except Exception as e:
+            logger.error(f"上传图片到Notion失败: {e}")
+            return None
+    
+    def _process_images_in_markdown(self, markdown: str) -> str:
+        """
+        处理Markdown中的图片，上传到Notion并替换链接
+        
+        Args:
+            markdown: 原始Markdown内容
+            
+        Returns:
+            str: 处理后的Markdown内容
+        """
+        # 匹配Markdown图片语法 ![alt](url)
+        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        
+        def replace_image(match):
+            alt_text = match.group(1)
+            image_url = match.group(2)
+            
+            # 上传图片到Notion
+            notion_url = self._upload_image_to_notion(image_url)
+            if notion_url:
+                return f"![{alt_text}]({notion_url})"
+            else:
+                # 如果上传失败，保持原有链接
+                logger.warning(f"图片上传失败，保持原链接: {image_url}")
+                return match.group(0)
+        
+        return re.sub(image_pattern, replace_image, markdown)
+
     def _markdown_to_notion_blocks(self, markdown: str) -> List[Dict[str, Any]]:
         """
         将Markdown内容转换为Notion块格式
@@ -217,8 +375,11 @@ class NotionService:
         Returns:
             List[Dict]: Notion块列表
         """
+        # 首先处理图片上传
+        processed_markdown = self._process_images_in_markdown(markdown)
+        
         blocks = []
-        lines = markdown.split('\n')
+        lines = processed_markdown.split('\n')
         current_paragraph = []
         
         for line in lines:
@@ -229,6 +390,18 @@ class NotionService:
                 if current_paragraph:
                     blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
                     current_paragraph = []
+                continue
+            
+            # 图片处理
+            image_match = re.match(r'!\[([^\]]*)\]\(([^)]+)\)', line)
+            if image_match:
+                if current_paragraph:
+                    blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
+                    current_paragraph = []
+                
+                alt_text = image_match.group(1)
+                image_url = image_match.group(2)
+                blocks.append(self._create_image_block(image_url, alt_text))
                 continue
             
             # 标题处理
@@ -407,4 +580,55 @@ class NotionService:
                     }
                 ]
             }
-        } 
+        }
+    
+    def _create_image_block(self, image_url: str, alt_text: str = "") -> Dict[str, Any]:
+        """创建图片块"""
+        # 如果是我们标记的需要上传的图片
+        if image_url.startswith("NOTION_UPLOAD:"):
+            original_url = image_url[14:]  # 移除NOTION_UPLOAD:前缀
+            
+            # 对于本地文件，使用external类型但提供完整的URL
+            if original_url.startswith('/static/'):
+                # 构建完整的服务器URL
+                base_url = os.getenv('API_BASE_URL', 'http://localhost:8000')
+                full_url = f"{base_url}{original_url}"
+            else:
+                full_url = original_url
+            
+            return {
+                "type": "image",
+                "image": {
+                    "type": "external",
+                    "external": {
+                        "url": full_url
+                    },
+                    "caption": [
+                        {
+                            "type": "text",
+                            "text": {
+                                "content": alt_text
+                            }
+                        }
+                    ] if alt_text else []
+                }
+            }
+        else:
+            # 普通的外部图片URL
+            return {
+                "type": "image",
+                "image": {
+                    "type": "external",
+                    "external": {
+                        "url": image_url
+                    },
+                    "caption": [
+                        {
+                            "type": "text",
+                            "text": {
+                                "content": alt_text
+                            }
+                        }
+                    ] if alt_text else []
+                }
+            } 
