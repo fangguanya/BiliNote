@@ -3,6 +3,7 @@ import { useTaskStore } from '@/store/taskStore'
 import { Info, Clock, Loader2 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area.tsx'
 import BatchNotionSync from '@/components/BatchNotionSync'
+import ForceBatchNotionSync from '@/components/ForceBatchNotionSync'
 
 const History = () => {
   const currentTaskId = useTaskStore(state => state.currentTaskId)
@@ -17,7 +18,10 @@ const History = () => {
             <h2 className="text-base font-medium text-neutral-900">生成历史</h2>
           </div>
           {/* 批量同步按钮 */}
-          <BatchNotionSync />
+          <div className="flex items-center gap-2">
+            <BatchNotionSync />
+            <ForceBatchNotionSync />
+          </div>
         </div>
         <ScrollArea className="w-full sm:h-[480px] md:h-[720px] lg:h-[92%]">
           {/*<div className="w-full flex-1 overflow-y-auto">*/}

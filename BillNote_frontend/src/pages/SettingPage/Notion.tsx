@@ -21,6 +21,7 @@ import {
 } from '@/services/notion'
 import { useSystemStore } from '@/store/configStore'
 import BatchNotionSync from '@/components/BatchNotionSync'
+import ForceBatchNotionSync from '@/components/ForceBatchNotionSync'
 
 const NotionSettings: React.FC = () => {
   const { notionConfig, setNotionConfig } = useSystemStore()
@@ -328,6 +329,18 @@ const NotionSettings: React.FC = () => {
                 </p>
               </div>
               <BatchNotionSync />
+            </div>
+            
+            <Separator />
+            
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>强制批量同步所有笔记</Label>
+                <p className="text-sm text-muted-foreground">
+                  强制同步所有笔记到Notion，包括已同步的（会创建新页面）
+                </p>
+              </div>
+              <ForceBatchNotionSync />
             </div>
           </CardContent>
         </Card>
