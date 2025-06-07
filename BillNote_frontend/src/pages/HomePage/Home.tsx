@@ -18,12 +18,13 @@ export const HomePage: FC = () => {
   useEffect(() => {
     if (!currentTask) {
       setStatus('idle')
-    } else if (currentTask.status === 'PENDING') {
-      setStatus('loading')
     } else if (currentTask.status === 'SUCCESS') {
       setStatus('success')
     } else if (currentTask.status === 'FAILED') {
       setStatus('failed')
+    } else {
+      // PENDING, RUNNING, 以及其他处理中状态都显示为loading
+      setStatus('loading')
     }
   }, [currentTask])
 

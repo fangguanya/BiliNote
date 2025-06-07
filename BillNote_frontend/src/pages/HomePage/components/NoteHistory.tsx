@@ -49,8 +49,8 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                 type="text"
                 placeholder="搜索笔记标题..."
                 className="w-full rounded border border-neutral-300 px-3 py-1 text-sm outline-none focus:border-primary"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
+                value={rawSearch}
+                onChange={e => setRawSearch(e.target.value)}
             />
           </div>
           <div className="rounded-md border border-neutral-200 bg-neutral-50 py-6 text-center">
@@ -69,29 +69,28 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
             type="text"
             placeholder="搜索笔记标题..."
             className="w-full rounded border border-neutral-300 px-3 py-1 text-sm outline-none focus:border-primary"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
+            value={rawSearch}
+            onChange={e => setRawSearch(e.target.value)}
         />
       </div>
       <div className="flex flex-col gap-2 overflow-hidden">
         {filteredTasks.map(task => (
           <div
-              onClick={() => onSelect(task.id)}
+            key={task.id}
+            onClick={() => onSelect(task.id)}
             className={cn(
               'flex cursor-pointer flex-col rounded-md border border-neutral-200 p-3',
               selectedId === task.id && 'border-primary bg-primary-light'
             )}
           >
             <div
-              key={task.id}
               className={cn('flex items-center gap-4')}
-
             >
               {/* 封面图 */}
               {task.platform === 'local' ? (
                 <img
                   src={
-                    task.audioMeta.cover_url ? `${task.audioMeta.cover_url}` : '/placeholder.png'
+                    task.audioMeta?.cover_url ? `${task.audioMeta.cover_url}` : '/placeholder.png'
                   }
                   alt="封面"
                   className="h-10 w-12 rounded-md object-cover"
@@ -100,7 +99,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                   <LazyImage
 
                       src={
-                        task.audioMeta.cover_url
+                        task.audioMeta?.cover_url
                             ? `/api/image_proxy?url=${encodeURIComponent(task.audioMeta.cover_url)}`
                             : '/placeholder.png'
                       }
@@ -115,11 +114,11 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <div className="line-clamp-2 max-w-[180px] flex-1 overflow-hidden text-sm text-ellipsis">
-                        {task.audioMeta.title || '未命名笔记'}
+                        {task.audioMeta?.title || '未命名笔记'}
                       </div>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>{task.audioMeta.title || '未命名笔记'}</p>
+                      <p>{task.audioMeta?.title || '未命名笔记'}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -132,14 +131,23 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                     已完成
                   </div>
                 )}
-                {task.status !== 'SUCCESS' && task.status !== 'FAILED' ? (
-                  <div className={'w-10 rounded bg-green-500 p-0.5 text-center text-white'}>
-                    等待中
+                {task.status === 'PENDING' && (
+                  <div className={'w-10 rounded bg-blue-500 p-0.5 text-center text-white'}>
+                    排队中
                   </div>
-                ) : (
-                  <></>
                 )}
-                {task.status === 'FAILED' && (
+                {task.status === 'RUNNING' && (
+                  <div className={'w-10 rounded bg-orange-500 p-0.5 text-center text-white'}>
+                    运行中
+                  </div>
+                )}
+                {(task.status !== 'SUCCESS' && task.status !== 'FAILD' && 
+                  task.status !== 'PENDING' && task.status !== 'RUNNING') && (
+                  <div className={'w-10 rounded bg-green-500 p-0.5 text-center text-white'}>
+                    处理中
+                  </div>
+                )}
+                {task.status === 'FAILD' && (
                   <div className={'w-10 rounded bg-red-500 p-0.5 text-center text-white'}>失败</div>
                 )}
               </div>
@@ -150,7 +158,7 @@ const NoteHistory: FC<NoteHistoryProps> = ({ onSelect, selectedId }) => {
                     <TooltipTrigger asChild>
                       <Button
                         type="button"
-                        size="small"
+                        size="sm"
                         variant="ghost"
                         onClick={e => {
                           e.stopPropagation()

@@ -4,7 +4,7 @@ import { delete_task, generateNote } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
 
 
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILD'
+export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
 
 export interface AudioMeta {
   cover_url: string
@@ -43,6 +43,7 @@ export interface Task {
   status: TaskStatus
   audioMeta: AudioMeta
   createdAt: string
+  platform: string
   formData: {
     video_url: string
     link: undefined | boolean
@@ -51,19 +52,27 @@ export interface Task {
     quality: string
     model_name: string
     provider_id: string
+    style?: string
+    format?: string[]
+    extras?: string
+    video_understanding?: boolean
+    video_interval?: number
+    grid_size?: number[]
+    max_collection_videos?: number
   }
 }
 
 interface TaskStore {
   tasks: Task[]
   currentTaskId: string | null
-  addPendingTask: (taskId: string, platform: string) => void
+  addPendingTask: (taskId: string, platform: string, formData: any) => void
+  addPendingTasks: (taskList: Array<{task_id: string, video_url: string, title: string}>, platform: string, formData: any) => void
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
   removeTask: (id: string) => void
   clearTasks: () => void
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
-  retryTask: (id: string) => void
+  retryTask: (id: string, payload?: any) => void
 }
 
 export const useTaskStore = create<TaskStore>()(
@@ -103,6 +112,41 @@ export const useTaskStore = create<TaskStore>()(
           ],
           currentTaskId: taskId, // 默认设置为当前任务
         })),
+
+      addPendingTasks: (taskList: Array<{task_id: string, video_url: string, title: string}>, platform: string, formData: any) =>
+        set(state => {
+          const newTasks = taskList.map(({ task_id, video_url, title }) => ({
+            formData: {
+              ...formData,
+              video_url: video_url
+            },
+            id: task_id,
+            status: 'PENDING' as TaskStatus,
+            markdown: '',
+            platform: platform,
+            transcript: {
+              full_text: '',
+              language: '',
+              raw: null,
+              segments: [],
+            },
+            createdAt: new Date().toISOString(),
+            audioMeta: {
+              cover_url: '',
+              duration: 0,
+              file_path: '',
+              platform: platform,
+              raw_info: null,
+              title: title || '未知标题',
+              video_id: '',
+            },
+          }))
+
+          return {
+            tasks: [...newTasks, ...state.tasks],
+            currentTaskId: taskList.length > 0 ? taskList[0].task_id : state.currentTaskId,
+          }
+        }),
 
       updateTaskContent: (id, data) =>
           set(state => ({

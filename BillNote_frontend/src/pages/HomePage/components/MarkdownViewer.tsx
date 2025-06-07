@@ -70,7 +70,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
       setModelName(currentTask.formData.model_name)
       setStyle(currentTask.formData.style)
       setCreateTime(currentTask.createdAt)
-      setSelectedContent(currentTask?.markdown)
+      setSelectedContent(typeof currentTask?.markdown === 'string' ? currentTask.markdown : '')
     } else {
       const latestVersion = [...currentTask.markdown].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -94,7 +94,8 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   }, [currentVerId, currentTask?.id])
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(selectedContent)
+      const contentToCopy = selectedContent || '暂无内容'
+      await navigator.clipboard.writeText(contentToCopy)
       setCopied(true)
       toast.success('已复制到剪贴板')
       setTimeout(() => setCopied(false), 2000)
@@ -132,7 +133,8 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
   const handleDownload = () => {
     const task = getCurrentTask()
     const name = task?.audioMeta.title || 'note'
-    const blob = new Blob([selectedContent], { type: 'text/markdown;charset=utf-8' })
+    const contentToDownload = selectedContent || '# 暂无内容\n\n笔记正在生成中，请稍等...'
+    const blob = new Blob([contentToDownload], { type: 'text/markdown;charset=utf-8' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
     link.download = `${name}.md`
@@ -159,7 +161,7 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
       <div className="flex h-screen w-full flex-col items-center justify-center space-y-3 text-neutral-500">
         <Idle />
         <div className="text-center">
-          <p className="text-lg font-bold">输入视频链接并点击“生成笔记”</p>
+          <p className="text-lg font-bold">输入视频链接并点击"生成笔记"按钮</p>
           <p className="mt-2 text-xs text-neutral-500">支持哔哩哔哩、YouTube 、抖音等视频平台</p>
         </div>
       </div>
@@ -305,17 +307,21 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
                       },
 
                       // Enhanced image with zoom capability
-                      img: ({ node, ...props }) => (
-                        <div className="my-8 flex justify-center">
-                          <Zoom>
-                            <img
-                              {...props}
-                              className="max-w-full cursor-zoom-in rounded-lg object-cover shadow-md transition-all hover:shadow-lg"
-                              style={{ maxHeight: '500px' }}
-                            />
-                          </Zoom>
-                        </div>
-                      ),
+                      img: ({ node, ...props }) => {
+                        // Filter out any props that might cause DOM issues
+                        const { ordered, ...cleanProps } = props;
+                        return (
+                          <span className="my-8 flex justify-center">
+                            <Zoom>
+                              <img
+                                {...cleanProps}
+                                className="max-w-full cursor-zoom-in rounded-lg object-cover shadow-md transition-all hover:shadow-lg"
+                                style={{ maxHeight: '500px' }}
+                              />
+                            </Zoom>
+                          </span>
+                        );
+                      },
 
                       // Better strong/bold text
                       strong: ({ children, ...props }) => (
@@ -326,17 +332,21 @@ const MarkdownViewer: FC<MarkdownViewerProps> = ({ status }) => {
 
                       // Enhanced list items with support for "fake headings"
                       li: ({ children, ...props }) => {
+                        // Filter out any invalid HTML attributes
+                        const { ordered, ...cleanProps } = props;
                         const rawText = String(children)
                         const isFakeHeading = /^(\*\*.+\*\*)$/.test(rawText.trim())
 
                         if (isFakeHeading) {
                           return (
-                            <div className="text-primary my-4 text-lg font-bold">{children}</div>
+                            <li className="text-primary my-4 text-lg font-bold list-none" {...cleanProps}>
+                              {children}
+                            </li>
                           )
                         }
 
                         return (
-                          <li className="my-1" {...props}>
+                          <li className="my-1" {...cleanProps}>
                             {children}
                           </li>
                         )

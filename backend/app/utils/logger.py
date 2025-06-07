@@ -25,6 +25,7 @@ file_handler.setFormatter(formatter)
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
+        #logger.setLevel(logging.WARNING)
         logger.setLevel(logging.INFO)
         logger.addHandler(console_handler)
         logger.addHandler(file_handler)

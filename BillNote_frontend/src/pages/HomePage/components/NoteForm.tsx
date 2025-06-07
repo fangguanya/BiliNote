@@ -7,14 +7,15 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form.tsx'
-import { useEffect } from 'react'
-import { useForm, useWatch } from 'react-hook-form'
+import { useEffect, useState } from 'react'
+import { useForm, useWatch, FieldErrors } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 
-import { Info, Loader2, Plus } from 'lucide-react'
+import { Info, Loader2, Plus, CheckCircle, XCircle, Clock } from 'lucide-react'
 import { message, Alert } from 'antd'
-import { generateNote } from '@/services/note.ts'
+import { generateNote, AuthError } from '@/services/note.ts'
+import LoginModal from '@/components/LoginModal'
 import { uploadFile } from '@/services/upload.ts'
 import { useTaskStore } from '@/store/taskStore'
 import { useModelStore } from '@/store/modelStore'
@@ -39,38 +40,21 @@ import { Textarea } from '@/components/ui/textarea.tsx'
 import { noteStyles, noteFormats, videoPlatforms } from '@/constant/note.ts'
 
 /* -------------------- 校验 Schema -------------------- */
-const formSchema = z
-  .object({
-    video_url: z.string(),
-    platform: z.string().nonempty('请选择平台'),
-    quality: z.enum(['fast', 'medium', 'slow']),
-    screenshot: z.boolean().optional(),
-    link: z.boolean().optional(),
-    model_name: z.string().nonempty('请选择模型'),
-    format: z.array(z.string()).default([]),
-    style: z.string().nonempty('请选择笔记生成风格'),
-    extras: z.string().optional(),
-    video_understanding: z.boolean().optional(),
-    video_interval: z.coerce.number().min(1).max(30).default(4).optional(),
-    grid_size: z
-      .tuple([z.coerce.number().min(1).max(10), z.coerce.number().min(1).max(10)])
-      .default([3, 3])
-      .optional(),
-  })
-  .superRefine(({ video_url, platform }, ctx) => {
-    if (platform === 'local' || platform === 'douyin') {
-      if (!video_url) {
-        ctx.addIssue({ code: 'custom', message: '本地视频路径不能为空', path: ['video_url'] })
-      }
-    } else {
-      try {
-        const url = new URL(video_url)
-        if (!['http:', 'https:'].includes(url.protocol)) throw new Error()
-      } catch {
-        ctx.addIssue({ code: 'custom', message: '请输入正确的视频链接', path: ['video_url'] })
-      }
-    }
-  })
+const formSchema = z.object({
+  platform: z.string().min(1, '请选择平台'),
+  video_url: z.string().min(1, '请输入视频链接'),
+  model_name: z.string().min(1, '请选择模型'),
+  style: z.string().min(1, '请选择笔记风格'),
+  quality: z.string().min(1, '请选择质量'),
+  format: z.array(z.string()).optional().default([]),
+  screenshot: z.boolean().optional().default(false),
+  link: z.boolean().optional().default(false),
+  extras: z.string().optional(),
+  video_understanding: z.boolean().optional().default(false),
+  video_interval: z.number().min(1).max(60).optional().default(4),
+  grid_size: z.array(z.number()).optional().default([3, 3]),
+  max_collection_videos: z.number().min(1).max(400).optional().default(200),
+})
 
 type NoteFormValues = z.infer<typeof formSchema>
 
@@ -119,9 +103,18 @@ const CheckboxGroup = ({
 /* -------------------- 主组件 -------------------- */
 const NoteForm = () => {
   /* ---- 全局状态 ---- */
-  const { addPendingTask, currentTaskId, setCurrentTask, getCurrentTask, retryTask } =
+  const { addPendingTask, addPendingTasks, currentTaskId, setCurrentTask, getCurrentTask, retryTask } =
     useTaskStore()
-  const { loadEnabledModels, modelList, showFeatureHint, setShowFeatureHint } = useModelStore()
+  const { loadEnabledModels, modelList } = useModelStore()
+
+  /* ---- State 状态管理 ---- */
+  const [uploading, setUploading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)  // 新增：提交状态
+  
+  /* ---- 登录弹窗状态 ---- */
+  const [showLoginModal, setShowLoginModal] = useState(false)
+  const [loginPlatform, setLoginPlatform] = useState('')
+  const [pendingFormData, setPendingFormData] = useState<NoteFormValues | null>(null)
 
   /* ---- 表单 ---- */
   const form = useForm<NoteFormValues>({
@@ -134,26 +127,23 @@ const NoteForm = () => {
       video_interval: 4,
       grid_size: [3, 3],
       format: [],
+      max_collection_videos: 200,
     },
   })
   const currentTask = getCurrentTask()
 
-  /* ---- 派生状态（只 watch 一次，提高性能） ---- */
+  /* ---- 派生状态 ---- */
   const platform = useWatch({ control: form.control, name: 'platform' }) as string
-  const videoUnderstandingEnabled = useWatch({ control: form.control, name: 'video_understanding' })
   const editing = currentTask && currentTask.id
 
   /* ---- 副作用 ---- */
   useEffect(() => {
     loadEnabledModels()
-
-    return
   }, [])
+
   useEffect(() => {
     if (!currentTask) return
     const { formData } = currentTask
-
-    console.log('currentTask.formData.platform:', formData.platform)
 
     form.reset({
       platform: formData.platform || 'bilibili',
@@ -168,67 +158,137 @@ const NoteForm = () => {
       video_interval: formData.video_interval ?? 4,
       grid_size: formData.grid_size ?? [3, 3],
       format: formData.format ?? [],
+      max_collection_videos: formData.max_collection_videos ?? 200,
     })
-  }, [
-    // 当下面任意一个变了，就重新 reset
-    currentTaskId,
-    // modelList 用来兜底 model_name
-    modelList.length,
-    // 还要加上 formData 的各字段，或者直接 currentTask
-    currentTask?.formData,
-  ])
+  }, [currentTaskId, modelList.length, currentTask?.formData])
 
   /* ---- 帮助函数 ---- */
   const isGenerating = () => !['SUCCESS', 'FAILED', undefined].includes(getCurrentTask()?.status)
   const generating = isGenerating()
+  
   const handleFileUpload = async (file: File, cb: (url: string) => void) => {
     const formData = new FormData()
     formData.append('file', file)
     try {
+      setUploading(true)
       const { data } = await uploadFile(formData)
       if (data.code === 0) cb(data.data.url)
     } catch (err) {
       console.error('上传失败:', err)
       message.error('上传失败，请重试')
+    } finally {
+      setUploading(false)
     }
   }
 
   const onSubmit = async (values: NoteFormValues) => {
-    console.log('Not even go here')
-    const payload: NoteFormValues = {
-      ...values,
-      provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
-      task_id: currentTaskId || '',
-    }
+    // 如果是重试任务，不需要设置submitting状态
     if (currentTaskId) {
-      retryTask(currentTaskId, payload)
+      retryTask(currentTaskId, {
+        ...values,
+        provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
+        task_id: currentTaskId,
+      })
       return
     }
 
-    message.success('已提交任务')
-    const { data } = await generateNote(payload)
-    addPendingTask(data.task_id, values.platform, payload)
+    // 新任务提交，设置submitting状态
+    setSubmitting(true)
+    
+    try {
+      const payload: any = {
+        ...values,
+        provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
+        task_id: '',
+      }
+
+      console.log('📤 提交数据:', payload)
+      const response = await generateNote(payload)
+      console.log('📥 收到响应:', response)
+      
+      if (!response) {
+        console.error('❌ 收到空响应')
+        message.error('任务提交失败')
+        return
+      }
+      
+      // 检查是否为合集响应
+      if (response.isCollection && response.taskList) {
+        // 批量添加任务
+        console.log('🎬 处理合集，添加任务:', response.taskList)
+        addPendingTasks(response.taskList, values.platform, payload)
+        message.success(`已成功为合集中的 ${response.taskList.length} 个视频创建任务！`)
+        // 重置编辑状态
+        setCurrentTask(null)
+      } else if (!response.isCollection && response.data?.task_id) {
+        // 单个视频任务
+        console.log('📺 处理单视频，添加任务:', response.data.task_id)
+        addPendingTask(response.data.task_id, values.platform, payload)
+        message.success('任务已提交！')
+        // 重置编辑状态
+        setCurrentTask(null)
+      } else {
+        console.error('❌ 响应格式错误:', response)
+        message.error('响应格式错误')
+      }
+    } catch (error: any) {
+      console.error('提交任务失败:', error)
+      
+      // 检查是否为认证错误
+      if (error.type === 'AUTH_REQUIRED' && error.authError) {
+        const authError = error.authError as AuthError
+        console.log('🔐 需要登录认证:', authError.platform)
+        
+        // 保存当前表单数据，登录成功后重新提交
+        setPendingFormData(values)
+        setLoginPlatform(authError.platform)
+        setShowLoginModal(true)
+        
+        message.warning(`需要${authError.platform === 'bilibili' ? 'B站' : '抖音'}登录认证`)
+        return
+      }
+      
+      message.error('任务提交失败，请重试')
+    } finally {
+      // 无论成功失败，都要重置提交状态
+      setSubmitting(false)
+    }
   }
+  
   const onInvalid = (errors: FieldErrors<NoteFormValues>) => {
     console.warn('表单校验失败：', errors)
     message.error('请完善所有必填项后再提交')
   }
+  
   const handleCreateNew = () => {
-    // 🔁 这里清空当前任务状态
-    // 比如调用 resetCurrentTask() 或者 navigate 到一个新页面
     setCurrentTask(null)
   }
+  
   const FormButton = () => {
-    const label = generating ? '正在生成…' : editing ? '重新生成' : '生成笔记'
+    // 按钮状态只控制提交过程，不受任务生成状态影响
+    const isSubmitDisabled = submitting || uploading
+    
+    let label = '生成笔记'
+    let showLoading = false
+    
+    if (submitting) {
+      label = '提交中...'
+      showLoading = true
+    } else if (uploading) {
+      label = '上传中...'
+      showLoading = true
+    } else if (editing) {
+      label = '重新生成'
+    }
 
     return (
       <div className="flex gap-2">
         <Button
           type="submit"
           className={!editing ? 'w-full' : 'w-2/3' + ' bg-primary'}
-          disabled={generating}
+          disabled={isSubmitDisabled}
         >
-          {generating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {showLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {label}
         </Button>
 
@@ -242,132 +302,189 @@ const NoteForm = () => {
     )
   }
 
-  /* -------------------- 渲染 -------------------- */
+  /* ---- 登录处理函数 ---- */
+  const handleLoginSuccess = async () => {
+    console.log('✅ 登录成功，重新提交任务')
+    
+    if (pendingFormData) {
+      // 登录成功后重新提交表单
+      await onSubmit(pendingFormData)
+      setPendingFormData(null)
+    }
+  }
+
+  const handleLoginClose = () => {
+    setShowLoginModal(false)
+    setLoginPlatform('')
+    setPendingFormData(null)
+  }
+
+  /* ---- 渲染部分 ---- */
   return (
-    <div className="h-full w-full">
+    <div className="space-y-6">
+      {/* 任务状态显示区域 */}
+      {currentTask && (
+        <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {generating ? (
+                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+              ) : currentTask.status === 'FAILED' ? (
+                <XCircle className="h-4 w-4 text-red-500" />
+              ) : (
+                <Clock className="h-4 w-4 text-gray-500" />
+              )}
+              <div>
+                <p className="text-sm font-medium">
+                  {generating ? '正在生成笔记...' : 
+                   currentTask.status === 'SUCCESS' ? '笔记生成完成' :
+                   currentTask.status === 'FAILED' ? '生成失败' : '任务排队中'}
+                </p>
+                <p className="text-xs text-neutral-500">
+                  任务ID: {currentTask.id}
+                </p>
+              </div>
+            </div>
+            {currentTask.status === 'FAILED' && (
+              <Button size="sm" variant="outline" onClick={() => form.handleSubmit(onSubmit)()}>
+                重试
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit, onInvalid)} className="space-y-4">
-          {/* 顶部按钮 */}
-          <FormButton></FormButton>
-
-          {/* 视频链接 & 平台 */}
-          <SectionHeader title="视频链接" tip="支持 B 站、YouTube 等平台" />
-          <div className="flex gap-2">
-            {/* 平台选择 */}
-
-            <FormField
-              control={form.control}
-              name="platform"
-              render={({ field }) => (
-                <FormItem>
-                  <Select
-                    disabled={!!editing}
-                    value={field.value}
-                    onValueChange={field.onChange}
-                    defaultValue={field.value}
-                  >
-                    <FormControl>
-                      <SelectTrigger className="w-32">
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {videoPlatforms?.map(p => (
-                        <SelectItem key={p.value} value={p.value}>
-                          <div className="flex items-center justify-center gap-2">
-                            <div className="h-4 w-4">{p.logo()}</div>
-                            <span>{p.label}</span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            {/* 链接输入 / 上传框 */}
-            <FormField
-              control={form.control}
-              name="video_url"
-              render={({ field }) => (
-                <FormItem className="flex-1">
-                  {platform === 'local' ? (
-                    <>
-                      <Input disabled={!!editing} placeholder="请输入本地视频路径" {...field} />
-                    </>
-                  ) : (
-                    <Input disabled={!!editing} placeholder="请输入视频网站链接" {...field} />
-                  )}
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-
+          {/* 平台选择 */}
           <FormField
             control={form.control}
-            name="video_url"
+            name="platform"
             render={({ field }) => (
-              <FormItem className="flex-1">
-                {platform === 'local' && (
-                  <>
-                    <div
-                      className="hover:border-primary mt-2 flex h-40 cursor-pointer items-center justify-center rounded-md border-2 border-dashed border-gray-300 transition-colors"
-                      onDragOver={e => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                      }}
-                      onDrop={e => {
-                        e.preventDefault()
-                        const file = e.dataTransfer.files?.[0]
-                        if (file) handleFileUpload(file, field.onChange)
-                      }}
-                      onClick={() => {
-                        const input = document.createElement('input')
-                        input.type = 'file'
-                        input.accept = 'video/*'
-                        input.onchange = e => {
-                          const file = (e.target as HTMLInputElement).files?.[0]
-                          if (file) handleFileUpload(file, field.onChange)
-                        }
-                        input.click()
-                      }}
-                    >
-                      <p className="text-center text-sm text-gray-500">
-                        拖拽文件到这里上传 <br />
-                        <span className="text-xs text-gray-400">或点击选择文件</span>
-                      </p>
-                    </div>
-                  </>
-                )}
+              <FormItem>
+                <FormLabel>视频平台</FormLabel>
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择视频平台" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {videoPlatforms.map(platform => (
+                      <SelectItem key={platform.value} value={platform.value}>
+                        <div className="flex items-center gap-2">
+                          <div className="h-4 w-4">
+                            <platform.logo />
+                          </div>
+                          {platform.label}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <FormMessage />
               </FormItem>
             )}
           />
+
+          {/* 视频链接 */}
+          <FormField
+            control={form.control}
+            name="video_url"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>视频链接</FormLabel>
+                <FormControl>
+                  {platform === 'local' ? (
+                    <div className="space-y-2">
+                      <Input
+                        placeholder="点击上传本地视频文件"
+                        value={field.value}
+                        readOnly
+                      />
+                      <input
+                        type="file"
+                        accept="video/*"
+                        onChange={e => {
+                          const file = e.target.files?.[0]
+                          if (file) handleFileUpload(file, field.onChange)
+                        }}
+                        className="w-full rounded border border-neutral-300 px-3 py-2 text-sm"
+                      />
+                    </div>
+                  ) : (
+                    <Input
+                      placeholder={`请输入${
+                        videoPlatforms.find(p => p.value === platform)?.label || '视频'
+                      }链接（支持单个视频或合集链接）`}
+                      {...field}
+                    />
+                  )}
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 合集设置 */}
+          {platform !== 'local' && (
+            <FormField
+              control={form.control}
+              name="max_collection_videos"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel className="flex items-center gap-2">
+                    合集处理
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Info className="h-4 w-4 text-neutral-500" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>如果输入的是合集链接，将自动处理合集中的所有视频</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </FormLabel>
+                  <FormControl>
+                    <div className="space-y-2">
+                      <Input
+                        type="number"
+                        min="1"
+                        max="400"
+                        placeholder="最大处理视频数量"
+                        value={field.value || 200}
+                        onChange={e => field.onChange(parseInt(e.target.value) || 200)}
+                      />
+                      <p className="text-xs text-neutral-500">
+                        设置从合集中最多处理多少个视频（1-400个）
+                      </p>
+                    </div>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
           <div className="grid grid-cols-2 gap-2">
             {/* 模型选择 */}
             <FormField
-              className="w-full"
               control={form.control}
               name="model_name"
               render={({ field }) => (
                 <FormItem>
-                  <SectionHeader title="模型选择" tip="不同模型效果不同，建议自行测试" />
-                  <Select
-                    value={field.value}
-                    onValueChange={field.onChange}
-                    defaultValue={field.value}
-                  >
+                  <FormLabel>AI 模型</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
-                      <SelectTrigger className="w-full min-w-0 truncate">
-                        <SelectValue />
+                      <SelectTrigger>
+                        <SelectValue placeholder="选择模型" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {modelList.map(m => (
-                        <SelectItem key={m.id} value={m.model_name}>
-                          {m.model_name}
+                      {modelList.map(model => (
+                        <SelectItem key={model.model_name} value={model.model_name}>
+                          {model.model_name}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -376,28 +493,24 @@ const NoteForm = () => {
                 </FormItem>
               )}
             />
+
             {/* 笔记风格 */}
             <FormField
-              className="w-full"
               control={form.control}
               name="style"
               render={({ field }) => (
                 <FormItem>
-                  <SectionHeader title="笔记风格" tip="选择生成笔记的呈现风格" />
-                  <Select
-                    value={field.value}
-                    onValueChange={field.onChange}
-                    defaultValue={field.value}
-                  >
+                  <FormLabel>笔记风格</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
-                      <SelectTrigger className="w-full min-w-0 truncate">
-                        <SelectValue />
+                      <SelectTrigger>
+                        <SelectValue placeholder="选择笔记风格" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {noteStyles.map(({ label, value }) => (
-                        <SelectItem key={value} value={value}>
-                          {label}
+                      {noteStyles.map(style => (
+                        <SelectItem key={style.value} value={style.value}>
+                          {style.label}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -407,115 +520,83 @@ const NoteForm = () => {
               )}
             />
           </div>
-          {/* 视频理解 */}
-          <SectionHeader title="视频理解" tip="将视频截图发给多模态模型辅助分析" />
-          <div className="flex flex-col gap-2">
-            <FormField
-              control={form.control}
-              name="video_understanding"
-              render={({ field }) => (
-                <FormItem>
-                  <div className="flex items-center gap-2">
-                    <FormLabel>启用</FormLabel>
-                    <Checkbox
-                      checked={videoUnderstandingEnabled}
-                      onCheckedChange={v => form.setValue('video_understanding', v)}
-                    />
-                  </div>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
 
-            <div className="grid grid-cols-2 gap-4">
-              {/* 采样间隔 */}
-              <FormField
-                control={form.control}
-                name="video_interval"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>采样间隔（秒）</FormLabel>
-                    <Input disabled={!videoUnderstandingEnabled} type="number" {...field} />
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              {/* 拼图大小 */}
-              <FormField
-                control={form.control}
-                name="grid_size"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>拼图尺寸（列 × 行）</FormLabel>
-                    <div className="flex items-center space-x-2">
-                      <Input
-                        disabled={!videoUnderstandingEnabled}
-                        type="number"
-                        value={field.value?.[0] || 3}
-                        onChange={e => field.onChange([+e.target.value, field.value?.[1] || 3])}
-                        className="w-16"
-                      />
-                      <span>x</span>
-                      <Input
-                        disabled={!videoUnderstandingEnabled}
-                        type="number"
-                        value={field.value?.[1] || 3}
-                        onChange={e => field.onChange([field.value?.[0] || 3, +e.target.value])}
-                        className="w-16"
-                      />
-                    </div>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-            <Alert
-              closable
-              type="error"
-              message={
-                <div>
-                  <strong>提示：</strong>
-                  <p>视频理解功能必须使用多模态模型。</p>
-                </div>
-              }
-              className="text-sm"
-            />
-          </div>
-
-          {/* 笔记格式 */}
+          {/* 格式选择 */}
           <FormField
             control={form.control}
             name="format"
             render={({ field }) => (
               <FormItem>
-                <SectionHeader title="笔记格式" tip="选择要包含的笔记元素" />
-                <CheckboxGroup
-                  value={field.value}
-                  onChange={field.onChange}
-                  disabledMap={{
-                    link: platform === 'local',
-                    screenshot: !videoUnderstandingEnabled,
-                  }}
-                />
+                <FormLabel>笔记格式</FormLabel>
+                <FormControl>
+                  <CheckboxGroup
+                    value={field.value || []}
+                    onChange={field.onChange}
+                    disabledMap={{
+                      screenshot: platform === 'local',
+                      link: platform === 'local',
+                    }}
+                  />
+                </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
 
-          {/* 备注 */}
+          {/* 质量设置 */}
+          <FormField
+            control={form.control}
+            name="quality"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>音频质量</FormLabel>
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择音频质量" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectItem value="fast">快速 (32kbps)</SelectItem>
+                    <SelectItem value="medium">中等 (64kbps)</SelectItem>
+                    <SelectItem value="slow">高质 (128kbps)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 额外要求 */}
           <FormField
             control={form.control}
             name="extras"
             render={({ field }) => (
               <FormItem>
-                <SectionHeader title="备注" tip="可在 Prompt 结尾附加自定义说明" />
-                <Textarea placeholder="笔记需要罗列出 xxx 关键点…" {...field} />
+                <FormLabel>额外要求 (可选)</FormLabel>
+                <FormControl>
+                  <Textarea
+                    placeholder="描述你对笔记内容的特殊要求..."
+                    className="resize-none"
+                    {...field}
+                  />
+                </FormControl>
                 <FormMessage />
               </FormItem>
             )}
           />
+
+          <FormButton />
         </form>
       </Form>
+
+      {/* 登录弹窗 */}
+      <LoginModal
+        isOpen={showLoginModal}
+        onClose={handleLoginClose}
+        platform={loginPlatform}
+        onLoginSuccess={handleLoginSuccess}
+      />
     </div>
   )
 }

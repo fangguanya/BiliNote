@@ -97,14 +97,87 @@ class VideoReader:
 
     def encode_images_to_base64(self, image_paths: list[str]) -> list[str]:
         base64_images = []
+        max_size_mb = 1  # 设置单个图片最大
+        
         for path in image_paths:
-            with open(path, "rb") as img_file:
-                encoded_string = base64.b64encode(img_file.read()).decode("utf-8")
-                base64_images.append(f"data:image/jpeg;base64,{encoded_string}")
+            try:
+                # 先检查原始文件大小
+                file_size_mb = os.path.getsize(path) / (1024 * 1024)
+                
+                # 如果文件太大，需要压缩
+                if file_size_mb > max_size_mb:
+                    logger.warning(f"⚠️ 图片过大({file_size_mb:.2f}MB)，开始压缩...")
+                    
+                    # 重新保存以压缩图片
+                    img = Image.open(path)
+                    
+                    # 计算需要的压缩质量
+                    target_quality = max(20, int(85 * (max_size_mb / file_size_mb)))
+                    
+                    # 如果还是太大，可能需要缩小尺寸
+                    if target_quality < 30:
+                        scale_factor = 0.8
+                        new_width = int(img.width * scale_factor)
+                        new_height = int(img.height * scale_factor)
+                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        target_quality = 50
+                    
+                    # 保存压缩后的图片到临时路径
+                    temp_path = path.replace('.jpg', '_compressed.jpg')
+                    img.save(temp_path, quality=target_quality, optimize=True)
+                    
+                    # 检查压缩后的大小
+                    compressed_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+                    
+                    # 使用压缩后的图片
+                    use_path = temp_path
+                else:
+                    use_path = path
+                
+                # 编码为base64
+                with open(use_path, "rb") as img_file:
+                    encoded_string = base64.b64encode(img_file.read()).decode("utf-8")
+                    
+                    # 检查base64编码后的大小
+                    base64_size_mb = len(encoded_string) * 3 / 4 / (1024 * 1024)  # base64编码约增加33%
+                    
+                    if base64_size_mb > max_size_mb:
+                        logger.error(f"❌ base64编码后仍然过大: {base64_size_mb:.2f}MB，跳过此图片")
+                        continue
+                    
+                    base64_images.append(f"data:image/jpeg;base64,{encoded_string}")
+                
+                # 清理临时文件
+                if 'temp_path' in locals() and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    
+            except Exception as e:
+                logger.error(f"❌ 处理图片失败 {path}: {e}")
+                continue
+        
+        # 检查总大小
+        total_size_mb = sum(len(img.split(',')[1]) * 3 / 4 for img in base64_images) / (1024 * 1024)
+        logger.warning(f"📊 总图片大小: {total_size_mb:.2f}MB, 图片数量: {len(base64_images)}")
+        
+        if total_size_mb > 4.5:  # 留一些余量
+            logger.warning(f"⚠️ 总图片大小过大({total_size_mb:.2f}MB)，只保留前几张图片")
+            # 只保留能确保在限制范围内的图片
+            filtered_images = []
+            current_size = 0
+            for img in base64_images:
+                img_size = len(img.split(',')[1]) * 3 / 4 / (1024 * 1024)
+                if current_size + img_size <= 4.0:  # 保守限制在4MB
+                    filtered_images.append(img)
+                    current_size += img_size
+                else:
+                    break
+            base64_images = filtered_images
+            logger.warning(f"✅ 过滤后保留 {len(base64_images)} 张图片，总大小: {current_size:.2f}MB")
+        
         return base64_images
 
     def run(self)->list[str]:
-        logger.info("🚀 开始提取视频帧...")
+        # logger.info("🚀 开始提取视频帧...")  # 删除冗余日志
         try:
             # 确保目录存在
             print(self.frame_dir,self.grid_dir)
@@ -122,7 +195,7 @@ class VideoReader:
             print(self.frame_dir,self.grid_dir)
             self.extract_frames()
             print("2#3",self.frame_dir,self.grid_dir)
-            logger.info("🧩 开始拼接网格图...")
+            # logger.info("🧩 开始拼接网格图...")  # 删除冗余日志
             image_paths = []
             groups = self.group_images()
             for idx, group in enumerate(groups, start=1):
@@ -132,7 +205,7 @@ class VideoReader:
                 out_path = self.concat_images(group, f"grid_{idx}")
                 image_paths.append(out_path)
 
-            logger.info("📤 开始编码图像...")
+            # logger.info("📤 开始编码图像...")  # 删除冗余日志
             urls = self.encode_images_to_base64(image_paths)
             return urls
         except Exception as e:

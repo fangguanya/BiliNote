@@ -11,9 +11,14 @@ interface IModel {
   root: string
 }
 
+interface IEnabledModel {
+  model_name: string
+  provider_id: string
+}
+
 interface ModelStore {
   models: IModel[]
-  modelList: []
+  modelList: IEnabledModel[]
   loading: boolean
   selectedModel: string
   loadModels: (providerId: string) => Promise<void>

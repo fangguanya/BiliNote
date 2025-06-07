@@ -5,6 +5,7 @@ from fastapi import HTTPException
 
 from app.downloaders.local_downloader import LocalDownloader
 from app.enmus.task_status_enums import TaskStatus
+from app.exceptions.auth_exceptions import AuthRequiredException
 import os
 from typing import Union, Optional
 
@@ -57,7 +58,6 @@ logger.info("starting up")
 
 NOTE_OUTPUT_DIR = "note_results"
 
-
 class NoteGenerator:
     def __init__(self):
         self.model_size: str = 'base'
@@ -66,10 +66,6 @@ class NoteGenerator:
         self.transcriber = self.get_transcriber()
         self.video_path = None
         logger.info("初始化NoteGenerator")
-
-    import logging
-
-    logger = logging.getLogger(__name__)
 
     @staticmethod
     def update_task_status(task_id: str, status: Union[str, TaskStatus], message: Optional[str] = None):
@@ -200,6 +196,10 @@ class NoteGenerator:
 
         try:
             logger.info(f"🎯 开始解析并生成笔记，task_id={task_id}")
+            # 首先设置任务状态为运行中
+            self.update_task_status(task_id, TaskStatus.RUNNING, message="开始处理任务")
+            
+            # 然后开始具体的解析工作
             self.update_task_status(task_id, TaskStatus.PARSING)
             downloader = self.get_downloader(platform)
             gpt = self.get_gpt(model_name=model_name, provider_id=provider_id)
@@ -232,13 +232,27 @@ class NoteGenerator:
                             video_path=video_path,
                             grid_size=tuple(grid_size),
                             frame_interval=video_interval,
-                            unit_width=1280,
-                            unit_height=720,
-                            save_quality=90,
+                            unit_width=960,
+                            unit_height=540,
+                            save_quality=60,
                         ).run()
                     except Exception as e:
                         logger.error(f"Error 下载视频失败，task_id={task_id}，错误信息：{e}")
-                        self.update_task_status(task_id, TaskStatus.FAILED, message=f"下载音频失败：{e}")
+                        
+                        # 检查是否为认证异常
+                        if isinstance(e, AuthRequiredException):
+                            self.update_task_status(task_id, TaskStatus.FAILED, message=f"需要{e.platform}登录认证")
+                            raise HTTPException(
+                                status_code=401,
+                                detail={
+                                    "code": "AUTH_REQUIRED",
+                                    "platform": e.platform,
+                                    "msg": e.message,
+                                    "error": str(e)
+                                }
+                            )
+                        
+                        self.update_task_status(task_id, TaskStatus.FAILED, message=f"下载视频失败：{e}")
                         raise HTTPException(
                             status_code=500,
                             detail={
@@ -261,6 +275,20 @@ class NoteGenerator:
                     logger.info(f"音频下载并缓存成功，task_id={task_id}")
             except Exception as e:
                 logger.error(f"Error 下载音频失败，task_id={task_id}，错误信息：{e}")
+                
+                # 检查是否为认证异常
+                if isinstance(e, AuthRequiredException):
+                    self.update_task_status(task_id, TaskStatus.FAILED, message=f"需要{e.platform}登录认证")
+                    raise HTTPException(
+                        status_code=401,
+                        detail={
+                            "code": "AUTH_REQUIRED",
+                            "platform": e.platform,
+                            "msg": e.message,
+                            "error": str(e)
+                        }
+                    )
+                
                 self.update_task_status(task_id, TaskStatus.FAILED, message=f"下载音频失败：{e}")
 
                 raise HTTPException(
