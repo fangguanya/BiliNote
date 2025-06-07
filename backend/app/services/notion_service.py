@@ -276,70 +276,49 @@ class NotionService:
         
         return title_text or "未命名"
     
-    def _upload_image_to_notion(self, image_url: str) -> Optional[str]:
+    def _get_image_url_for_notion(self, image_url: str) -> str:
         """
-        上传图片到Notion并返回Notion文件URL
+        获取适用于Notion的图片URL
         
         Args:
             image_url: 图片URL（可以是本地路径或网络URL）
             
         Returns:
-            str: Notion文件URL，如果失败返回None
+            str: 适用于Notion的图片URL
         """
         try:
             # 判断是否为本地文件路径
             if image_url.startswith('/static/') or image_url.startswith('./'):
-                # 本地文件路径，需要读取文件
-                local_path = image_url
+                # 本地文件路径，构建完整的服务器URL
+                # 尝试多种方式获取基础URL
+                base_url = (
+                    os.getenv('API_BASE_URL') or 
+                    os.getenv('PUBLIC_API_URL') or
+                    'http://localhost:8000'
+                )
+                
                 if image_url.startswith('/static/'):
-                    local_path = f"static{image_url[7:]}"  # 移除/static前缀
+                    full_url = f"{base_url}{image_url}"
                 elif image_url.startswith('./'):
-                    local_path = image_url[2:]  # 移除./前缀
+                    # 移除 ./ 前缀
+                    clean_path = image_url[2:]
+                    if not clean_path.startswith('static/'):
+                        clean_path = f"static/{clean_path}"
+                    full_url = f"{base_url}/{clean_path}"
                 
-                if not os.path.exists(local_path):
-                    logger.warning(f"本地图片文件不存在: {local_path}")
-                    return None
-                
-                # 读取本地文件
-                with open(local_path, 'rb') as f:
-                    file_content = f.read()
-                
-                # 获取文件类型
-                mime_type, _ = mimetypes.guess_type(local_path)
-                if not mime_type or not mime_type.startswith('image/'):
-                    logger.warning(f"不支持的图片格式: {local_path}")
-                    return None
-                
-                # 上传到Notion
-                filename = os.path.basename(local_path)
-                
+                logger.info(f"转换本地图片URL: {image_url} -> {full_url}")
+                return full_url
             else:
-                # 网络URL，下载后上传
-                response = requests.get(image_url, timeout=10)
-                response.raise_for_status()
+                # 网络URL，直接返回
+                return image_url
                 
-                file_content = response.content
-                mime_type = response.headers.get('content-type', 'image/jpeg')
-                
-                if not mime_type.startswith('image/'):
-                    logger.warning(f"URL返回的不是图片: {image_url}")
-                    return None
-                
-                # 从URL提取文件名
-                filename = os.path.basename(image_url.split('?')[0]) or 'image.jpg'
-            
-            # 使用Notion API上传文件
-            # 注意：Notion API需要先创建页面，然后上传文件到页面
-            # 这里我们返回一个临时的标记，在实际创建页面时再处理
-            return f"NOTION_UPLOAD:{image_url}"
-            
         except Exception as e:
-            logger.error(f"上传图片到Notion失败: {e}")
-            return None
+            logger.error(f"处理图片URL失败: {e}")
+            return image_url
     
     def _process_images_in_markdown(self, markdown: str) -> str:
         """
-        处理Markdown中的图片，上传到Notion并替换链接
+        处理Markdown中的图片，转换为适用于Notion的链接
         
         Args:
             markdown: 原始Markdown内容
@@ -354,14 +333,9 @@ class NotionService:
             alt_text = match.group(1)
             image_url = match.group(2)
             
-            # 上传图片到Notion
-            notion_url = self._upload_image_to_notion(image_url)
-            if notion_url:
-                return f"![{alt_text}]({notion_url})"
-            else:
-                # 如果上传失败，保持原有链接
-                logger.warning(f"图片上传失败，保持原链接: {image_url}")
-                return match.group(0)
+            # 获取适用于Notion的图片URL
+            notion_url = self._get_image_url_for_notion(image_url)
+            return f"![{alt_text}]({notion_url})"
         
         return re.sub(image_pattern, replace_image, markdown)
 
@@ -471,34 +445,80 @@ class NotionService:
         return blocks
     
     def _create_paragraph_block(self, text: str) -> Dict[str, Any]:
-        """创建段落块"""
+        """创建段落块，支持链接解析"""
+        # 解析链接和普通文本
+        rich_text = self._parse_rich_text(text)
+        
         return {
             "type": "paragraph",
             "paragraph": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": rich_text
             }
         }
+    
+    def _parse_rich_text(self, text: str) -> List[Dict[str, Any]]:
+        """解析文本中的链接和格式，返回rich_text数组"""
+        rich_text = []
+        
+        # 匹配Markdown链接格式 [text](url)
+        link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+        last_end = 0
+        
+        for match in re.finditer(link_pattern, text):
+            # 添加链接前的普通文本
+            if match.start() > last_end:
+                plain_text = text[last_end:match.start()]
+                if plain_text:
+                    rich_text.append({
+                        "type": "text",
+                        "text": {
+                            "content": plain_text
+                        }
+                    })
+            
+            # 添加链接
+            link_text = match.group(1)
+            link_url = match.group(2)
+            rich_text.append({
+                "type": "text",
+                "text": {
+                    "content": link_text,
+                    "link": {
+                        "url": link_url
+                    }
+                }
+            })
+            
+            last_end = match.end()
+        
+        # 添加剩余的普通文本
+        if last_end < len(text):
+            remaining_text = text[last_end:]
+            if remaining_text:
+                rich_text.append({
+                    "type": "text",
+                    "text": {
+                        "content": remaining_text
+                    }
+                })
+        
+        # 如果没有链接，返回简单文本
+        if not rich_text:
+            rich_text = [{
+                "type": "text",
+                "text": {
+                    "content": text
+                }
+            }]
+        
+        return rich_text
     
     def _create_heading_1_block(self, text: str) -> Dict[str, Any]:
         """创建一级标题块"""
         return {
             "type": "heading_1",
             "heading_1": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": self._parse_rich_text(text)
             }
         }
     
@@ -507,14 +527,7 @@ class NotionService:
         return {
             "type": "heading_2",
             "heading_2": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": self._parse_rich_text(text)
             }
         }
     
@@ -523,14 +536,7 @@ class NotionService:
         return {
             "type": "heading_3",
             "heading_3": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": self._parse_rich_text(text)
             }
         }
     
@@ -539,14 +545,7 @@ class NotionService:
         return {
             "type": "bulleted_list_item",
             "bulleted_list_item": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": self._parse_rich_text(text)
             }
         }
     
@@ -555,14 +554,7 @@ class NotionService:
         return {
             "type": "numbered_list_item",
             "numbered_list_item": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": self._parse_rich_text(text)
             }
         }
     
@@ -571,64 +563,26 @@ class NotionService:
         return {
             "type": "quote",
             "quote": {
-                "rich_text": [
-                    {
-                        "type": "text",
-                        "text": {
-                            "content": text
-                        }
-                    }
-                ]
+                "rich_text": self._parse_rich_text(text)
             }
         }
     
     def _create_image_block(self, image_url: str, alt_text: str = "") -> Dict[str, Any]:
         """创建图片块"""
-        # 如果是我们标记的需要上传的图片
-        if image_url.startswith("NOTION_UPLOAD:"):
-            original_url = image_url[14:]  # 移除NOTION_UPLOAD:前缀
-            
-            # 对于本地文件，使用external类型但提供完整的URL
-            if original_url.startswith('/static/'):
-                # 构建完整的服务器URL
-                base_url = os.getenv('API_BASE_URL', 'http://localhost:8000')
-                full_url = f"{base_url}{original_url}"
-            else:
-                full_url = original_url
-            
-            return {
-                "type": "image",
-                "image": {
-                    "type": "external",
-                    "external": {
-                        "url": full_url
-                    },
-                    "caption": [
-                        {
-                            "type": "text",
-                            "text": {
-                                "content": alt_text
-                            }
+        return {
+            "type": "image",
+            "image": {
+                "type": "external",
+                "external": {
+                    "url": image_url
+                },
+                "caption": [
+                    {
+                        "type": "text",
+                        "text": {
+                            "content": alt_text
                         }
-                    ] if alt_text else []
-                }
+                    }
+                ] if alt_text else []
             }
-        else:
-            # 普通的外部图片URL
-            return {
-                "type": "image",
-                "image": {
-                    "type": "external",
-                    "external": {
-                        "url": image_url
-                    },
-                    "caption": [
-                        {
-                            "type": "text",
-                            "text": {
-                                "content": alt_text
-                            }
-                        }
-                    ] if alt_text else []
-                }
-            } 
+        } 

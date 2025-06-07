@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useTaskStore, type Task } from '@/store/taskStore'
+import { useSystemStore } from '@/store/configStore'
 import { get_task_status } from '@/services/note.ts'
 import { saveNoteToNotion } from '@/services/notion'
 import toast from 'react-hot-toast'
@@ -7,13 +8,15 @@ import toast from 'react-hot-toast'
 export const useTaskPolling = (interval = 3000) => {
   // 获取store实例，而不是使用hooks
   const store = useTaskStore.getState()
+  const systemStore = useSystemStore.getState()
   const tasksRef = useRef<Task[]>([])
   const updateTaskContentRef = useRef(store.updateTaskContent)
   const updateTaskNotionRef = useRef(store.updateTaskNotion)
+  const notionConfigRef = useRef(systemStore.notionConfig)
 
   // 监听tasks变化
   useEffect(() => {
-    const unsubscribe = useTaskStore.subscribe(
+    const unsubscribeTask = useTaskStore.subscribe(
       (state) => {
         tasksRef.current = state.tasks
         updateTaskContentRef.current = state.updateTaskContent
@@ -21,13 +24,25 @@ export const useTaskPolling = (interval = 3000) => {
       }
     )
     
+    const unsubscribeSystem = useSystemStore.subscribe(
+      (state) => {
+        notionConfigRef.current = state.notionConfig
+      }
+    )
+    
     // 初始化当前状态
-    const currentState = useTaskStore.getState()
-    tasksRef.current = currentState.tasks
-    updateTaskContentRef.current = currentState.updateTaskContent
-    updateTaskNotionRef.current = currentState.updateTaskNotion
+    const currentTaskState = useTaskStore.getState()
+    tasksRef.current = currentTaskState.tasks
+    updateTaskContentRef.current = currentTaskState.updateTaskContent
+    updateTaskNotionRef.current = currentTaskState.updateTaskNotion
+    
+    const currentSystemState = useSystemStore.getState()
+    notionConfigRef.current = currentSystemState.notionConfig
 
-    return unsubscribe
+    return () => {
+      unsubscribeTask()
+      unsubscribeSystem()
+    }
   }, [])
 
   useEffect(() => {
@@ -54,16 +69,16 @@ export const useTaskPolling = (interval = 3000) => {
               })
 
               // 检查是否需要自动保存到Notion
-              if (task.formData.auto_save_notion) {
+              if (task.formData.auto_save_notion || notionConfigRef.current.autoSaveEnabled) {
                 console.log('🔄 开始自动保存到Notion:', task.id)
-                const savedToken = localStorage.getItem('notion_token')
+                const notionConfig = notionConfigRef.current
                 
-                if (savedToken) {
+                if (notionConfig.token) {
                   try {
                     const result = await saveNoteToNotion({
                       taskId: task.id,
-                      token: savedToken,
-                      // 可以考虑从localStorage获取默认数据库ID
+                      token: notionConfig.token,
+                      databaseId: notionConfig.defaultSaveMode === 'database' ? notionConfig.defaultDatabaseId : undefined
                     })
 
                     if (result) {
@@ -75,6 +90,7 @@ export const useTaskPolling = (interval = 3000) => {
                         autoSave: true
                       })
                       console.log('✅ 自动保存到Notion成功:', result.url)
+                      toast.success(`笔记已自动保存到Notion`)
                     } else {
                       console.warn('⚠️ 自动保存到Notion失败')
                       toast.error('自动保存到Notion失败，请手动保存')
@@ -85,7 +101,7 @@ export const useTaskPolling = (interval = 3000) => {
                   }
                 } else {
                   console.warn('⚠️ 未找到Notion令牌，跳过自动保存')
-                  toast.error('未配置Notion令牌，跳过自动保存')
+                  toast.error('未配置Notion令牌，请前往设置页面配置')
                 }
               }
             } else if (status === 'FAILED') {
