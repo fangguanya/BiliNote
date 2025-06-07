@@ -51,7 +51,9 @@ class VideoRequest(BaseModel):
     video_interval: Optional[int] = 0
     grid_size: Optional[list] = []
     is_collection: Optional[bool] = False
-    max_collection_videos: Optional[int] = 200
+    max_collection_videos: Optional[int] = 400
+    auto_save_notion: Optional[bool] = True
+    auto_detect_collection: Optional[bool] = True  # 新增：自动识别合集开关
 
     @field_validator("video_url")
     def validate_supported_url(cls, v):
@@ -167,9 +169,13 @@ async def generate_note(
             logger.error("❌ 不支持的平台或无效的URL")
             raise HTTPException(status_code=400, detail="不支持的平台或无效的URL")
 
-        # 检测是否为合集URL
-        is_collection = is_collection_url(request.video_url, platform)
-        logger.info(f"🔍 合集检测结果: {is_collection}")
+        # 检测是否为合集URL（根据auto_detect_collection开关决定）
+        is_collection = False
+        if request.auto_detect_collection:
+            is_collection = is_collection_url(request.video_url, platform)
+            logger.info(f"🔍 合集检测结果: {is_collection} (自动识别开关: 开)")
+        else:
+            logger.info(f"🔍 合集检测被跳过 (自动识别开关: 关)")
         
         if is_collection:
             logger.info("🎬 进入合集处理分支")

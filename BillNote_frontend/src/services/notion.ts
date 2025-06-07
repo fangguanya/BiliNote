@@ -26,6 +26,23 @@ export interface SaveToNotionResult {
   message: string
 }
 
+export interface BatchSyncResult {
+  task_id: string
+  success: boolean
+  page_id?: string
+  page_url?: string
+  title?: string
+  error?: string
+}
+
+export interface BatchSyncToNotionResult {
+  total: number
+  success_count: number
+  failed_count: number
+  results: BatchSyncResult[]
+  message: string
+}
+
 /**
  * 测试Notion连接
  */
@@ -168,5 +185,49 @@ export const debugApiConnection = async (): Promise<void> => {
       status: error.response?.status,
       config: error.config
     })
+  }
+}
+
+/**
+ * 批量同步笔记到Notion
+ */
+export const batchSyncToNotion = async (params: {
+  token: string
+  databaseId?: string
+  parentPageId?: string
+  taskIds?: string[]
+}): Promise<BatchSyncToNotionResult | null> => {
+  try {
+    console.log('🔄 开始批量同步到Notion...', params)
+    const response = await request.post('/notion/batch_sync', {
+      token: params.token,
+      database_id: params.databaseId,
+      parent_page_id: params.parentPageId,
+      task_ids: params.taskIds
+    })
+    
+    if (response.data.code === 0) {
+      const result: BatchSyncToNotionResult = response.data.data
+      console.log('✅ 批量同步完成:', result)
+      
+      // 显示详细的同步结果
+      if (result.success_count > 0) {
+        toast.success(`成功同步 ${result.success_count} 个笔记到Notion`)
+      }
+      if (result.failed_count > 0) {
+        toast.error(`${result.failed_count} 个笔记同步失败`)
+      }
+      
+      return result
+    } else {
+      console.error('❌ 批量同步失败:', response.data.msg)
+      toast.error(response.data.msg)
+      return null
+    }
+  } catch (error: any) {
+    console.error('❌ 批量同步请求失败:', error)
+    const errorMsg = error.response?.data?.msg || error.message || '批量同步失败'
+    toast.error(errorMsg)
+    return null
   }
 } 

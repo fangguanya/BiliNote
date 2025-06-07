@@ -5,6 +5,7 @@ import mimetypes
 from typing import Optional, Dict, Any, List
 from notion_client import Client
 from datetime import datetime
+from urllib.parse import urlparse
 from app.utils.logger import get_logger
 from app.models.notes_model import NoteResult
 
@@ -277,6 +278,40 @@ class NotionService:
                 
         return title_text or "未命名"
     
+    def _is_valid_url(self, url: str) -> bool:
+        """
+        验证URL是否有效
+        
+        Args:
+            url: 要验证的URL
+            
+        Returns:
+            bool: URL是否有效
+        """
+        try:
+            # 排除一些明显无效的URL格式
+            if not url or url.strip() == "":
+                return False
+            
+            # 排除attachment:协议和其他特殊协议
+            if url.startswith(('attachment:', 'data:', 'blob:')):
+                logger.warning(f"跳过特殊协议URL: {url}")
+                return False
+            
+            result = urlparse(url)
+            # 检查是否有有效的scheme和netloc（对于http/https）或者是相对路径
+            if result.scheme in ('http', 'https'):
+                return bool(result.netloc)
+            elif result.scheme == '':
+                # 相对路径也认为是有效的
+                return bool(result.path)
+            else:
+                # 其他协议需要有path
+                return bool(result.path)
+        except Exception as e:
+            logger.warning(f"URL验证失败: {url}, 错误: {e}")
+            return False
+
     def upload_file_to_notion(self, file_path: str, filename: str = None) -> Optional[str]:
         """
         上传文件到Notion并返回file_upload_id
@@ -289,6 +324,11 @@ class NotionService:
             str: file_upload_id，失败时返回None
         """
         try:
+            # 首先检查和处理特殊协议
+            if file_path.startswith(('attachment:', 'data:', 'blob:')):
+                logger.warning(f"⚠️ 不支持的文件协议: {file_path}")
+                return None
+            
             # 首先获取文件内容和类型信息，用于创建File Upload对象
             file_content = None
             content_type = None
@@ -329,8 +369,9 @@ class NotionService:
                         full_path = path
                         break
                 
-                if not os.path.exists(full_path):
-                    logger.error(f"本地文件不存在: {full_path} (原路径: {original_path})")
+                if not full_path or not os.path.exists(full_path):
+                    logger.error(f"本地文件不存在: {original_path}")
+                    logger.debug(f"尝试过的路径: {possible_paths}")
                     return None
                 
                 logger.info(f"找到本地文件: {full_path}")
@@ -587,18 +628,29 @@ class NotionService:
                         }
                     })
             
-            # 添加链接
+            # 验证并添加链接
             link_text = match.group(1)
             link_url = match.group(2)
-            rich_text.append({
-                "type": "text",
-                "text": {
-                    "content": link_text,
-                    "link": {
-                        "url": link_url
+            
+            if self._is_valid_url(link_url):
+                rich_text.append({
+                    "type": "text",
+                    "text": {
+                        "content": link_text,
+                        "link": {
+                            "url": link_url
+                        }
                     }
-                }
-            })
+                })
+            else:
+                # 如果URL无效，将其作为普通文本处理
+                logger.warning(f"⚠️ 无效URL，作为普通文本处理: [{link_text}]({link_url})")
+                rich_text.append({
+                    "type": "text",
+                    "text": {
+                        "content": f"[{link_text}]({link_url})"
+                    }
+                })
             
             last_end = match.end()
         

@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/select'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { Loader2, Database, FileText, TestTube, RefreshCw, ExternalLink } from 'lucide-react'
+import { Loader2, Database, FileText, TestTube, RefreshCw, ExternalLink, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { 
   testNotionConnection, 
@@ -20,6 +20,7 @@ import {
   NotionDatabase 
 } from '@/services/notion'
 import { useSystemStore } from '@/store/configStore'
+import BatchNotionSync from '@/components/BatchNotionSync'
 
 const NotionSettings: React.FC = () => {
   const { notionConfig, setNotionConfig } = useSystemStore()
@@ -120,15 +121,13 @@ const NotionSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight">Notion 集成设置</h2>
-        <p className="text-muted-foreground">
-          配置 Notion 集成，让笔记自动保存到你的 Notion 工作区
-        </p>
+        <h2 className="text-2xl font-bold tracking-tight">Notion集成</h2>
+        <p className="text-muted-foreground">配置Notion集成，自动保存生成的笔记</p>
       </div>
 
       <Separator />
 
-      {/* 连接配置 */}
+      {/* 基础配置 */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -136,72 +135,78 @@ const NotionSettings: React.FC = () => {
             连接配置
           </CardTitle>
           <CardDescription>
-            配置 Notion 集成令牌，建立与你的 Notion 工作区的连接
+            配置Notion集成令牌以启用笔记同步功能
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* 令牌输入 */}
           <div className="space-y-2">
-            <Label htmlFor="token">Notion 集成令牌</Label>
+            <Label htmlFor="token">Notion集成令牌</Label>
             <div className="flex gap-2">
               <Input
                 id="token"
                 type="password"
+                placeholder="输入Notion集成令牌"
                 value={tempToken}
                 onChange={(e) => setTempToken(e.target.value)}
-                placeholder="输入你的 Notion 集成令牌"
                 className="flex-1"
               />
               <Button
                 onClick={handleTestConnection}
                 disabled={isConnecting || !tempToken.trim()}
-                size="sm"
+                variant="outline"
               >
                 {isConnecting ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
-                  '测试连接'
+                  <TestTube className="w-4 h-4" />
                 )}
+                测试连接
               </Button>
             </div>
             {isConnected && (
-              <p className="text-sm text-green-600 flex items-center gap-2">
-                ✅ 已连接到 Notion
-              </p>
+              <p className="text-sm text-green-600">✅ 连接成功</p>
             )}
-            <p className="text-sm text-muted-foreground">
-              请确保你的 Notion 集成拥有必要的权限来读取和创建页面
-            </p>
           </div>
 
+          {/* 保存/清除按钮 */}
           <div className="flex gap-2">
-            <Button 
-              onClick={handleSaveConfig}
-              disabled={!tempToken.trim()}
-              size="sm"
-            >
+            <Button onClick={handleSaveConfig} disabled={!tempToken.trim()}>
               保存配置
             </Button>
-            <Button 
-              onClick={handleClearConfig}
-              variant="outline"
-              size="sm"
-            >
+            <Button onClick={handleClearConfig} variant="outline">
               清除配置
             </Button>
+          </div>
+
+          {/* 获取令牌说明 */}
+          <div className="p-4 bg-muted rounded-lg">
+            <p className="text-sm text-muted-foreground mb-2">
+              如何获取Notion集成令牌：
+            </p>
+            <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
+              <li>访问 <Button variant="link" className="h-auto p-0 text-sm" onClick={() => window.open('https://www.notion.so/my-integrations', '_blank')}>
+                <ExternalLink className="w-3 h-3 mr-1" />
+                Notion集成页面
+              </Button></li>
+              <li>点击"新集成"创建集成</li>
+              <li>复制"内部集成令牌"</li>
+              <li>在Notion页面中邀请该集成</li>
+            </ol>
           </div>
         </CardContent>
       </Card>
 
-      {/* 保存设置 */}
+      {/* 默认配置 */}
       {isConnected && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Database className="w-5 h-5" />
-              保存设置
+              默认设置
             </CardTitle>
             <CardDescription>
-              配置笔记的默认保存方式和目标位置
+              配置新笔记的默认保存方式和目标位置
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -274,20 +279,21 @@ const NotionSettings: React.FC = () => {
                     )}
                   </Button>
                 </div>
+                
                 {databases.length === 0 && !isLoadingDatabases && (
                   <p className="text-sm text-muted-foreground">
-                    未找到数据库，请在 Notion 中创建数据库后重试
+                    未找到数据库，请在Notion中创建数据库后重试
                   </p>
                 )}
               </div>
             )}
 
             {/* 自动保存开关 */}
-            <div className="flex items-center justify-between space-x-2">
+            <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label>启用自动保存</Label>
+                <Label>自动保存到Notion</Label>
                 <p className="text-sm text-muted-foreground">
-                  笔记生成完成后自动保存到 Notion
+                  笔记生成完成后自动保存到Notion
                 </p>
               </div>
               <Switch
@@ -301,29 +307,31 @@ const NotionSettings: React.FC = () => {
         </Card>
       )}
 
-      {/* 帮助信息 */}
-      <Card>
-        <CardHeader>
-          <CardTitle>如何获取 Notion 集成令牌？</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            1. 访问 <Button variant="link" className="h-auto p-0 text-blue-600" onClick={() => window.open('https://www.notion.so/my-integrations', '_blank')}>
-              <ExternalLink className="w-3 h-3 mr-1" />
-              Notion 集成页面
-            </Button>
-          </p>
-          <p className="text-sm text-muted-foreground">
-            2. 点击 "新集成" 创建一个新的集成
-          </p>
-          <p className="text-sm text-muted-foreground">
-            3. 复制生成的 "内部集成令牌"
-          </p>
-          <p className="text-sm text-muted-foreground">
-            4. 在 Notion 中将集成添加到你想要保存笔记的数据库或页面
-          </p>
-        </CardContent>
-      </Card>
+      {/* 批量操作 */}
+      {isConnected && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Upload className="w-5 h-5" />
+              批量操作
+            </CardTitle>
+            <CardDescription>
+              批量管理和同步历史笔记到Notion
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>批量同步未保存的笔记</Label>
+                <p className="text-sm text-muted-foreground">
+                  将所有未同步到Notion的笔记一键批量同步
+                </p>
+              </div>
+              <BatchNotionSync />
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

@@ -8,10 +8,10 @@ import {
 } from '@/components/Icons/platform.tsx'
 
 export const noteFormats = [
+  { label: 'AI总结', value: 'summary' },
   { label: '目录', value: 'toc' },
   { label: '原片跳转', value: 'link' },
   { label: '原片截图', value: 'screenshot' },
-  { label: 'AI总结', value: 'summary' },
 ] as const
 
 export const noteStyles = [

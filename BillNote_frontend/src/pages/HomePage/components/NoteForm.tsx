@@ -46,15 +46,16 @@ const formSchema = z.object({
   model_name: z.string().min(1, '请选择模型'),
   style: z.string().min(1, '请选择笔记风格'),
   quality: z.string().min(1, '请选择质量'),
-  format: z.array(z.string()).optional().default([]),
-  screenshot: z.boolean().optional().default(false),
-  link: z.boolean().optional().default(false),
+  format: z.array(z.string()),
+  screenshot: z.boolean(),
+  link: z.boolean(),
   extras: z.string().optional(),
-  video_understanding: z.boolean().optional().default(false),
-  video_interval: z.number().min(1).max(60).optional().default(4),
-  grid_size: z.array(z.number()).optional().default([3, 3]),
-  max_collection_videos: z.number().min(1).max(400).optional().default(200),
-  auto_save_notion: z.boolean().optional().default(false),
+  video_understanding: z.boolean(),
+  video_interval: z.number().min(1).max(60),
+  grid_size: z.array(z.number()),
+  max_collection_videos: z.number().min(1).max(400),
+  auto_save_notion: z.boolean(),
+  auto_detect_collection: z.boolean(),
 })
 
 type NoteFormValues = z.infer<typeof formSchema>
@@ -124,15 +125,16 @@ const NoteForm = () => {
       platform: 'bilibili',
       quality: 'medium',
       model_name: modelList[0]?.model_name || '',
-      style: 'minimal',
+      style: 'academic',
       video_interval: 4,
       grid_size: [3, 3],
-      format: [],
-      max_collection_videos: 200,
-      auto_save_notion: false,
-      screenshot: false,
-      link: false,
-      video_understanding: false,
+      format: ['summary'],
+      max_collection_videos: 400,
+      auto_save_notion: true,
+      auto_detect_collection: true,
+      screenshot: true,
+      link: true,
+      video_understanding: true,
     },
   })
   const currentTask = getCurrentTask()
@@ -154,17 +156,18 @@ const NoteForm = () => {
       platform: formData.platform || 'bilibili',
       video_url: formData.video_url || '',
       model_name: formData.model_name || modelList[0]?.model_name || '',
-      style: formData.style || 'minimal',
+      style: formData.style || 'academic',
       quality: formData.quality || 'medium',
       extras: formData.extras || '',
-      screenshot: formData.screenshot ?? false,
-      link: formData.link ?? false,
-      video_understanding: formData.video_understanding ?? false,
+      screenshot: formData.screenshot ?? true,
+      link: formData.link ?? true,
+      video_understanding: formData.video_understanding ?? true,
       video_interval: formData.video_interval ?? 4,
       grid_size: formData.grid_size ?? [3, 3],
-      format: formData.format ?? [],
-      max_collection_videos: formData.max_collection_videos ?? 200,
-      auto_save_notion: formData.auto_save_notion ?? false,
+      format: formData.format ?? ['summary'],
+      max_collection_videos: formData.max_collection_videos ?? 400,
+      auto_save_notion: formData.auto_save_notion ?? true,
+      auto_detect_collection: formData.auto_detect_collection ?? true,
     })
   }, [currentTaskId, modelList.length, currentTask?.formData])
 
@@ -432,6 +435,42 @@ const NoteForm = () => {
             )}
           />
 
+          {/* 合集识别开关 */}
+          {platform !== 'local' && (
+            <FormField
+              control={form.control}
+              name="auto_detect_collection"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-start space-x-3 space-y-0 rounded-md border p-4">
+                  <FormControl>
+                    <Checkbox
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                  <div className="space-y-1 leading-none">
+                    <FormLabel className="flex items-center gap-2 cursor-pointer">
+                      自动识别合集
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Info className="h-4 w-4 text-neutral-500" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>开启后，如果输入的是合集链接，将自动处理合集中的所有视频；关闭后仅处理单个视频</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </FormLabel>
+                    <p className="text-sm text-neutral-500">
+                      开启后自动识别并处理合集中的所有视频，关闭后只处理单个视频
+                    </p>
+                  </div>
+                </FormItem>
+              )}
+            />
+          )}
+
           {/* 合集设置 */}
           {platform !== 'local' && (
             <FormField
@@ -440,14 +479,14 @@ const NoteForm = () => {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel className="flex items-center gap-2">
-                    合集处理
+                    合集处理数量
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger>
                           <Info className="h-4 w-4 text-neutral-500" />
                         </TooltipTrigger>
                         <TooltipContent>
-                          <p>如果输入的是合集链接，将自动处理合集中的所有视频</p>
+                          <p>设置从合集中最多处理多少个视频</p>
                         </TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
@@ -459,8 +498,8 @@ const NoteForm = () => {
                         min="1"
                         max="400"
                         placeholder="最大处理视频数量"
-                        value={field.value || 200}
-                        onChange={e => field.onChange(parseInt(e.target.value) || 200)}
+                        value={field.value || 400}
+                        onChange={e => field.onChange(parseInt(e.target.value) || 400)}
                       />
                       <p className="text-xs text-neutral-500">
                         设置从合集中最多处理多少个视频（1-400个）
