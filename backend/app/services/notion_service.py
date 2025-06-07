@@ -21,6 +21,7 @@ class NotionService:
             token: Notion集成令牌
         """
         try:
+            self.token = token  # 保存token用于直接API调用
             self.client = Client(auth=token)
             logger.info("Notion客户端初始化成功")
         except Exception as e:
@@ -273,71 +274,172 @@ class NotionService:
         for item in title_array:
             if item.get("type") == "text":
                 title_text += item.get("text", {}).get("content", "")
-        
+                
         return title_text or "未命名"
     
-    def _get_image_url_for_notion(self, image_url: str) -> str:
+    def upload_file_to_notion(self, file_path: str, filename: str = None) -> Optional[str]:
         """
-        获取适用于Notion的图片URL
+        上传文件到Notion并返回file_upload_id
         
         Args:
-            image_url: 图片URL（可以是本地路径或网络URL）
+            file_path: 文件路径（本地路径或URL）
+            filename: 文件名（可选）
             
         Returns:
-            str: 适用于Notion的图片URL
+            str: file_upload_id，失败时返回None
         """
         try:
-            # 判断是否为本地文件路径
-            if image_url.startswith('/static/') or image_url.startswith('./'):
-                # 本地文件路径，构建完整的服务器URL
-                # 尝试多种方式获取基础URL
-                base_url = (
-                    os.getenv('API_BASE_URL') or 
-                    os.getenv('PUBLIC_API_URL') or
-                    'http://localhost:8000'
-                )
-                
-                if image_url.startswith('/static/'):
-                    full_url = f"{base_url}{image_url}"
-                elif image_url.startswith('./'):
-                    # 移除 ./ 前缀
-                    clean_path = image_url[2:]
-                    if not clean_path.startswith('static/'):
-                        clean_path = f"static/{clean_path}"
-                    full_url = f"{base_url}/{clean_path}"
-                
-                logger.info(f"转换本地图片URL: {image_url} -> {full_url}")
-                return full_url
+            # 首先获取文件内容和类型信息，用于创建File Upload对象
+            file_content = None
+            content_type = None
+            final_filename = filename
+            
+            if file_path.startswith(('http://', 'https://')):
+                # 网络文件
+                logger.info(f"正在下载网络文件: {file_path}")
+                file_response = requests.get(file_path)
+                if file_response.status_code == 200:
+                    file_content = file_response.content
+                    content_type = file_response.headers.get('content-type', 'application/octet-stream')
+                    if not final_filename:
+                        final_filename = file_path.split('/')[-1]
+                else:
+                    logger.error(f"下载网络文件失败: {file_path}, 状态码: {file_response.status_code}")
+                    return None
             else:
-                # 网络URL，直接返回
-                return image_url
+                # 本地文件处理
+                original_path = file_path
+                
+                # 处理相对路径
+                if file_path.startswith('./'):
+                    file_path = file_path[2:]
+                if file_path.startswith('/static/'):
+                    file_path = file_path[1:]  # 移除开头的 /，变成 static/...
+                
+                # 构建完整路径，尝试多种可能的位置
+                possible_paths = [
+                    os.path.join(os.getcwd(), 'backend', file_path),  # backend/static/...
+                    os.path.join(os.getcwd(), file_path),             # static/...
+                    file_path                                          # 绝对路径
+                ]
+                
+                full_path = None
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        full_path = path
+                        break
+                
+                if not os.path.exists(full_path):
+                    logger.error(f"本地文件不存在: {full_path} (原路径: {original_path})")
+                    return None
+                
+                logger.info(f"找到本地文件: {full_path}")
+                try:
+                    with open(full_path, 'rb') as f:
+                        file_content = f.read()
+                    content_type = mimetypes.guess_type(full_path)[0] or 'application/octet-stream'
+                    if not final_filename:
+                        final_filename = os.path.basename(full_path)
+                except Exception as e:
+                    logger.error(f"读取本地文件失败: {e}")
+                    return None
+            
+            if not file_content:
+                logger.error("无法获取文件内容")
+                return None
+            
+            # 步骤1: 创建File Upload对象（提供filename和content_type）
+            payload = {
+                "filename": final_filename,
+                "content_type": content_type
+            }
+            
+            logger.info(f"创建File Upload对象: filename={final_filename}, content_type={content_type}, size={len(file_content)} bytes")
+            
+            file_upload_response = requests.post(
+                "https://api.notion.com/v1/file_uploads",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                    "Notion-Version": "2022-06-28"
+                },
+                json=payload
+            )
+            
+            if file_upload_response.status_code != 200:
+                logger.error(f"创建file upload对象失败: {file_upload_response.status_code}, {file_upload_response.text}")
+                return None
+            
+            upload_data = file_upload_response.json()
+            file_upload_id = upload_data["id"]
+            upload_url = upload_data["upload_url"]
+            
+            logger.info(f"成功创建file upload对象: {file_upload_id}, upload_url: {upload_url}")
+            
+            # 步骤2: 上传文件内容
+            files = {
+                'file': (final_filename, file_content, content_type)
+            }
+            
+            logger.info(f"开始上传文件内容到: {upload_url}")
+            
+            upload_response = requests.post(
+                upload_url,
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Notion-Version": "2022-06-28"
+                    # 注意：不要设置Content-Type，让requests自动处理multipart/form-data
+                },
+                files=files
+            )
+            
+            logger.info(f"文件上传响应状态码: {upload_response.status_code}")
+            
+            if upload_response.status_code != 200:
+                logger.error(f"上传文件内容失败: {upload_response.status_code}, {upload_response.text}")
+                return None
+            
+            upload_result = upload_response.json()
+            logger.info(f"上传结果: {upload_result}")
+            
+            if upload_result.get("status") == "uploaded":
+                logger.info(f"✅ 文件上传成功: {final_filename}, file_upload_id: {file_upload_id}")
+                return file_upload_id
+            else:
+                logger.error(f"❌ 文件上传状态异常: {upload_result.get('status')}, 预期状态: uploaded")
+                return None
                 
         except Exception as e:
-            logger.error(f"处理图片URL失败: {e}")
-            return image_url
+            logger.error(f"上传文件到Notion失败: {e}")
+            return None
     
-    def _process_images_in_markdown(self, markdown: str) -> str:
+    def _extract_images_from_markdown(self, markdown: str) -> List[Dict[str, str]]:
         """
-        处理Markdown中的图片，转换为适用于Notion的链接
+        从Markdown中提取图片信息，支持带星号前缀的格式
         
         Args:
             markdown: 原始Markdown内容
             
         Returns:
-            str: 处理后的Markdown内容
+            List[Dict]: 图片信息列表，包含alt_text和image_url
         """
-        # 匹配Markdown图片语法 ![alt](url)
-        image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+        images = []
+        # 支持带星号前缀的图片格式: *![](/static/screenshots/...)
+        image_pattern = r'^\*?!\[([^\]]*)\]\(([^)]+)\)$'
         
-        def replace_image(match):
-            alt_text = match.group(1)
-            image_url = match.group(2)
-            
-            # 获取适用于Notion的图片URL
-            notion_url = self._get_image_url_for_notion(image_url)
-            return f"![{alt_text}]({notion_url})"
+        for line in markdown.split('\n'):
+            line = line.strip()
+            match = re.match(image_pattern, line)
+            if match:
+                alt_text = match.group(1)
+                image_url = match.group(2)
+                images.append({
+                    'alt_text': alt_text,
+                    'image_url': image_url,
+                    'match_text': match.group(0)
+                })
         
-        return re.sub(image_pattern, replace_image, markdown)
+        return images
 
     def _markdown_to_notion_blocks(self, markdown: str) -> List[Dict[str, Any]]:
         """
@@ -349,11 +451,8 @@ class NotionService:
         Returns:
             List[Dict]: Notion块列表
         """
-        # 首先处理图片上传
-        processed_markdown = self._process_images_in_markdown(markdown)
-        
         blocks = []
-        lines = processed_markdown.split('\n')
+        lines = markdown.split('\n')
         current_paragraph = []
         
         for line in lines:
@@ -366,8 +465,9 @@ class NotionService:
                     current_paragraph = []
                 continue
             
-            # 图片处理
-            image_match = re.match(r'!\[([^\]]*)\]\(([^)]+)\)', line)
+            # 图片处理 - 支持带星号前缀的格式，如: *![](/static/screenshots/...)
+            # 匹配模式: 可选的星号(*) + 图片markdown语法
+            image_match = re.match(r'^\*?!\[([^\]]*)\]\(([^)]+)\)$', line.strip())
             if image_match:
                 if current_paragraph:
                     blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
@@ -375,7 +475,18 @@ class NotionService:
                 
                 alt_text = image_match.group(1)
                 image_url = image_match.group(2)
-                blocks.append(self._create_image_block(image_url, alt_text))
+                
+                logger.info(f"🖼️ 处理图片: {image_url}, alt_text: '{alt_text}'")
+                
+                # 上传图片到Notion并创建图片块
+                file_upload_id = self.upload_file_to_notion(image_url)
+                if file_upload_id:
+                    logger.info(f"✅ 图片上传成功，创建file_upload图片块")
+                    blocks.append(self._create_image_block_with_upload(file_upload_id, alt_text))
+                else:
+                    # 如果上传失败，回退到外部链接方式
+                    logger.warning(f"⚠️ 图片上传失败，回退到外部链接: {image_url}")
+                    blocks.append(self._create_image_block_external(image_url, alt_text))
                 continue
             
             # 标题处理
@@ -567,8 +678,35 @@ class NotionService:
             }
         }
     
-    def _create_image_block(self, image_url: str, alt_text: str = "") -> Dict[str, Any]:
-        """创建图片块"""
+    def _create_image_block_with_upload(self, file_upload_id: str, alt_text: str = "") -> Dict[str, Any]:
+        """创建使用file_upload的图片块"""
+        block = {
+            "object": "block",
+            "type": "image",
+            "image": {
+                "type": "file_upload",
+                "file_upload": {
+                    "id": file_upload_id
+                }
+            }
+        }
+        
+        # 只有在有alt_text时才添加caption
+        if alt_text:
+            block["image"]["caption"] = [
+                {
+                    "type": "text",
+                    "text": {
+                        "content": alt_text
+                    }
+                }
+            ]
+        
+        logger.info(f"创建file_upload图片块: file_upload_id={file_upload_id}, alt_text='{alt_text}'")
+        return block
+    
+    def _create_image_block_external(self, image_url: str, alt_text: str = "") -> Dict[str, Any]:
+        """创建使用外部链接的图片块（回退方案）"""
         return {
             "type": "image",
             "image": {
