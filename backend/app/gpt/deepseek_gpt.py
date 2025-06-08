@@ -5,6 +5,7 @@ from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT
 from app.gpt.utils import fix_markdown
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptSegment
+from app.utils.retry_utils import retry_on_rate_limit
 from datetime import timedelta
 
 
@@ -45,6 +46,7 @@ class DeepSeekGPT(GPT):
         print(content)
         return [{"role": "user", "content": content + AI_SUM}]
 
+    @retry_on_rate_limit(max_retries=3, delay=30.0, backoff_factor=1.5)
     def summarize(self, source: GPTSource) -> str:
         self.screenshot = source.screenshot
         source.segment = self.ensure_segments_type(source.segment)

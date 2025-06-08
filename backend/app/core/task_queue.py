@@ -63,6 +63,13 @@ class TaskQueue:
         """添加任务到队列"""
         if not task_id:
             task_id = str(uuid.uuid4())
+        
+        # 保存原始请求数据到持久化存储
+        try:
+            from app.routers.note import save_original_request_data
+            save_original_request_data(task_id, data)
+        except Exception as e:
+            logger.warning(f"⚠️ 保存原始请求数据失败: {task_id}, {e}")
             
         task = Task(
             task_id=task_id,
@@ -141,6 +148,45 @@ class TaskQueue:
             "retried_count": retried_count, 
             "total_failed": len(failed_tasks),
             "message": f"成功重试 {retried_count} 个失败任务"
+        }
+        
+    def batch_retry_non_success_tasks(self) -> dict:
+        """批量重试所有非成功状态的任务（包括PENDING、RUNNING、FAILED）"""
+        with self._lock:
+            non_success_tasks = [task for task in self.tasks.values() if task.status != TaskStatus.SUCCESS]
+            
+            if not non_success_tasks:
+                logger.info("📝 没有找到非成功状态的任务")
+                return {"retried_count": 0, "total_non_success": 0, "message": "没有需要重试的非成功任务"}
+            
+            # 按状态分类统计
+            pending_count = len([t for t in non_success_tasks if t.status == TaskStatus.PENDING])
+            running_count = len([t for t in non_success_tasks if t.status == TaskStatus.RUNNING])
+            failed_count = len([t for t in non_success_tasks if t.status == TaskStatus.FAILED])
+            
+            retried_count = 0
+            for task in non_success_tasks:
+                # 重置任务状态
+                task.status = TaskStatus.PENDING
+                task.started_at = None
+                task.completed_at = None
+                task.error_message = None
+                task.result = None
+                
+                # 重新提交到队列
+                self.task_queue.put(task)
+                retried_count += 1
+                
+        logger.info(f"🔄 批量重试非成功任务完成，重试了 {retried_count} 个任务")
+        logger.info(f"📊 重试统计: PENDING({pending_count}), RUNNING({running_count}), FAILED({failed_count})")
+        
+        return {
+            "retried_count": retried_count, 
+            "total_non_success": len(non_success_tasks),
+            "pending_count": pending_count,
+            "running_count": running_count, 
+            "failed_count": failed_count,
+            "message": f"成功重试 {retried_count} 个非成功任务 (PENDING:{pending_count}, RUNNING:{running_count}, FAILED:{failed_count})"
         }
         
     def force_retry_all_tasks(self, new_task_data: dict = None) -> dict:

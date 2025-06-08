@@ -4,6 +4,7 @@ from app.models.gpt_model import GPTSource
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK
 from app.gpt.utils import fix_markdown
 from app.models.transcriber_model import TranscriptSegment
+from app.utils.retry_utils import retry_on_rate_limit
 from datetime import timedelta
 from typing import List
 
@@ -64,6 +65,7 @@ class UniversalGPT(GPT):
     def list_models(self):
         return self.client.models.list()
 
+    @retry_on_rate_limit(max_retries=3, delay=30.0, backoff_factor=1.5)
     def summarize(self, source: GPTSource) -> str:
         self.screenshot = source.screenshot
         self.link = source.link

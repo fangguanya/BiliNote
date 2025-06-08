@@ -214,9 +214,17 @@ export const useTaskStore = create<TaskStore>()(
         if (!task) return
 
         try {
-          // 首先调用后端重试接口
-          const { retry_task } = await import('@/services/note')
-          await retry_task(id)
+          // 首先尝试普通重试接口
+          const { retry_task, force_retry_task } = await import('@/services/note')
+          
+          try {
+            await retry_task(id)
+            console.log('✅ 普通重试成功:', id)
+          } catch (error) {
+            console.log('⚠️ 普通重试失败，尝试强制重试:', error)
+            // 普通重试失败，尝试强制重试
+            await force_retry_task(id)
+          }
           
           // 重试成功，更新前端状态
           set(state => ({
@@ -231,7 +239,7 @@ export const useTaskStore = create<TaskStore>()(
             ),
           }))
         } catch (error) {
-          console.error('重试任务失败:', error)
+          console.error('🔥 重试任务失败:', error)
           // 重试失败，保持原状态或者可以显示错误信息
         }
       },

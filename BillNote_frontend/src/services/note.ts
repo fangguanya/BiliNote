@@ -180,6 +180,31 @@ export const batch_retry_failed_tasks = async () => {
   }
 }
 
+// 批量重试所有非成功任务
+export const batch_retry_non_success_tasks = async () => {
+  try {
+    const response = await request.post('/batch_retry_non_success')
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      if (result.retried_count > 0) {
+        const statusInfo = `PENDING:${result.pending_count}, RUNNING:${result.running_count}, FAILED:${result.failed_count}`
+        toast.success(`成功重试 ${result.retried_count} 个非成功任务 (${statusInfo})`)
+      } else {
+        toast('没有需要重试的非成功任务')
+      }
+      return result
+    } else {
+      toast.error(response.data.message || '批量重试非成功任务失败')
+      throw new Error(response.data.message || '批量重试非成功任务失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 批量重试非成功任务出错:', e)
+    toast.error('批量重试非成功任务失败，请稍后重试')
+    throw e
+  }
+}
+
 // 强制重试所有任务
 export const force_retry_all_tasks = async (config?: {
   model_name?: string
@@ -210,7 +235,7 @@ export const force_retry_all_tasks = async (config?: {
 // 强制重试单个任务
 export const force_retry_task = async (task_id: string) => {
   try {
-    const response = await request.post(`/force_retry_task/${task_id}`)
+    const response = await request.post(`/force_retry_task/${task_id}`, {})
     
     if (response.data.code === 0) {
       toast.success('任务强制重试成功，请等待处理')
@@ -222,6 +247,87 @@ export const force_retry_task = async (task_id: string) => {
   } catch (e: any) {
     console.error('❌ 强制重试任务失败:', e)
     toast.error('强制重试任务失败，请稍后重试')
+    throw e
+  }
+}
+
+// 强制重启任务 - 完全清理并重新开始
+export const force_restart_task = async (task_id: string) => {
+  try {
+    const response = await request.post(`/force_restart_task/${task_id}`)
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      toast.success(`任务强制重启成功: ${result.title || '未知标题'}`)
+      return response.data
+    } else {
+      toast.error(response.data.message || '强制重启失败')
+      throw new Error(response.data.message || '强制重启失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 强制重启任务失败:', e)
+    toast.error('强制重启任务失败，请稍后重试')
+    throw e
+  }
+}
+
+// 验证任务状态
+export const validate_tasks = async (task_ids: string[]) => {
+  try {
+    const response = await request.post('/validate_tasks', { task_ids })
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      console.log(`✅ 任务验证完成: ${result.message}`)
+      return result
+    } else {
+      console.error('❌ 任务验证失败:', response.data.message)
+      throw new Error(response.data.message || '任务验证失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 验证任务状态出错:', e)
+    throw e
+  }
+}
+
+// 清空重置单个任务
+export const clear_reset_task = async (task_id: string) => {
+  try {
+    const response = await request.post(`/clear_reset_task/${task_id}`)
+    
+    if (response.data.code === 0) {
+      toast.success('任务已清空重置，重新进入队列')
+      return response.data
+    } else {
+      toast.error(response.data.message || '清空重置失败')
+      throw new Error(response.data.message || '清空重置失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 清空重置任务失败:', e)
+    toast.error('清空重置任务失败，请稍后重试')
+    throw e
+  }
+}
+
+// 批量清空重置任务
+export const batch_clear_reset_tasks = async (task_ids: string[], force_clear: boolean = false) => {
+  try {
+    const response = await request.post('/batch_clear_reset_tasks', { 
+      task_ids, 
+      force_clear 
+    })
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      toast.success(result.message)
+      return result
+    } else {
+      toast.error(response.data.message || '批量清空重置失败')
+      throw new Error(response.data.message || '批量清空重置失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 批量清空重置任务失败:', e)
+    toast.error('批量清空重置任务失败，请稍后重试')
     throw e
   }
 }

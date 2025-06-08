@@ -2,7 +2,9 @@
 import json
 import os
 import uuid
-from typing import Optional, Union
+import time
+import glob
+from typing import Optional, Union, List, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File
@@ -69,6 +71,52 @@ class VideoRequest(BaseModel):
 
 NOTE_OUTPUT_DIR = "note_results"
 UPLOAD_DIR = "uploads"
+
+
+def save_original_request_data(task_id: str, request_data: dict):
+    """保存原始请求数据到持久化存储"""
+    os.makedirs(NOTE_OUTPUT_DIR, exist_ok=True)
+    
+    try:
+        # 添加时间戳和任务ID
+        request_data_with_meta = {
+            "task_id": task_id,
+            "created_at": time.time(),
+            "created_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "original_request": request_data
+        }
+        
+        # 保存到 {task_id}.request.json 文件
+        request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
+        with open(request_file_path, "w", encoding="utf-8") as f:
+            json.dump(request_data_with_meta, f, ensure_ascii=False, indent=2)
+            
+        logger.info(f"✅ 原始请求数据已保存: {task_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ 保存原始请求数据失败: {task_id}, {e}")
+
+
+def load_original_request_data(task_id: str) -> dict:
+    """从持久化存储加载原始请求数据"""
+    try:
+        request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
+        
+        if os.path.exists(request_file_path):
+            with open(request_file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # 返回原始请求数据
+            original_request = data.get("original_request", {})
+            logger.info(f"✅ 成功加载原始请求数据: {task_id}")
+            return original_request
+        else:
+            logger.warning(f"⚠️ 原始请求数据文件不存在: {task_id}")
+            return {}
+            
+    except Exception as e:
+        logger.error(f"❌ 加载原始请求数据失败: {task_id}, {e}")
+        return {}
 
 
 def save_note_to_file(task_id: str, note):
@@ -669,6 +717,431 @@ def batch_retry_failed_tasks():
         logger.error(f"❌ 批量重试失败任务出错: {e}")
         return R.error(f"批量重试失败: {str(e)}")
 
+@router.post("/batch_retry_non_success")
+def batch_retry_non_success_tasks():
+    """批量重试所有非成功状态的任务（包括PENDING、RUNNING、FAILED）"""
+    try:
+        # 首先尝试重试队列中的任务
+        queue_result = task_queue.batch_retry_non_success_tasks()
+        logger.info(f"✅ 队列批量重试完成: {queue_result}")
+        
+        # 如果队列中没有需要重试的任务，尝试从文件系统重建
+        if queue_result["retried_count"] == 0:
+            logger.info("🔍 队列为空，尝试从文件系统重建需要重试的任务")
+            
+            # 扫描所有状态文件，查找失败的任务
+            rebuilt_count = 0
+            status_files = glob.glob(os.path.join(NOTE_OUTPUT_DIR, "*.status.json"))
+            
+            for status_file in status_files:
+                try:
+                    task_id = os.path.basename(status_file).replace(".status.json", "")
+                    
+                    # 检查任务是否已在队列中
+                    if task_queue.get_task_status(task_id):
+                        continue
+                    
+                    with open(status_file, "r", encoding="utf-8") as f:
+                        status_content = json.load(f)
+                    
+                    status = status_content.get("status")
+                    if status and status != TaskStatus.SUCCESS.value:
+                        # 尝试重建任务
+                        success = rebuild_task_from_files(task_id)
+                        if success:
+                            rebuilt_count += 1
+                            logger.info(f"✅ 成功重建任务: {task_id}")
+                        else:
+                            logger.warning(f"⚠️ 重建任务失败: {task_id}")
+                            
+                except Exception as e:
+                    logger.error(f"❌ 处理状态文件失败 {status_file}: {e}")
+            
+            if rebuilt_count > 0:
+                logger.info(f"🔄 从文件系统重建了 {rebuilt_count} 个任务")
+                return R.success({
+                    "retried_count": rebuilt_count,
+                    "total_non_success": rebuilt_count,
+                    "rebuilt_from_files": True,
+                    "message": f"从文件系统重建并重试了 {rebuilt_count} 个任务"
+                })
+        
+        # 返回原始队列重试结果
+        if queue_result["retried_count"] > 0:
+            return R.success({
+                "retried_count": queue_result["retried_count"],
+                "total_non_success": queue_result["total_non_success"],
+                "pending_count": queue_result["pending_count"],
+                "running_count": queue_result["running_count"],
+                "failed_count": queue_result["failed_count"],
+                "message": queue_result["message"]
+            })
+        else:
+            return R.success({
+                "retried_count": 0,
+                "total_non_success": 0,
+                "message": "没有需要重试的非成功任务"
+            })
+        
+    except Exception as e:
+        logger.error(f"❌ 批量重试非成功任务出错: {e}")
+        return R.error(f"批量重试非成功任务失败: {str(e)}")
+
+def rebuild_task_from_files(task_id: str) -> bool:
+    """从文件系统重建任务"""
+    try:
+        from app.core.task_queue import TaskType
+        from app.enmus.note_enums import DownloadQuality
+        
+        # 检查音频metadata文件（分离文件模式）
+        audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
+        result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+        
+        # 首先尝试从音频metadata文件获取信息
+        if os.path.exists(audio_path):
+            try:
+                with open(audio_path, "r", encoding="utf-8") as f:
+                    audio_data = json.load(f)
+                
+                video_url = audio_data.get("file_path", "")
+                platform = audio_data.get("platform", "")
+                title = audio_data.get("title", "未知标题")
+                
+                if video_url and platform:
+                    task_data = {
+                        'video_url': video_url,
+                        'platform': platform,
+                        'quality': DownloadQuality.AUDIO,
+                        'model_name': 'gpt-4o-mini',
+                        'provider_id': 'openai',
+                        'screenshot': False,
+                        'link': False,
+                        'format': [],
+                        'style': '简洁',
+                        'extras': None,
+                        'video_understanding': False,
+                        'video_interval': 0,
+                        'grid_size': [],
+                        'title': title
+                    }
+                    
+                    task_queue.add_task(
+                        task_type=TaskType.SINGLE_VIDEO, 
+                        data=task_data,
+                        task_id=task_id
+                    )
+                    return True
+                    
+            except Exception as e:
+                logger.error(f"❌ 从音频metadata重建任务失败: {task_id}, {e}")
+                # 读取音频metadata文件失败，调用删除老记录重新队列执行
+                logger.info(f"🔄 音频metadata文件读取失败，尝试清空重置任务: {task_id}")
+                return clear_and_reset_task(task_id)
+        
+        # 如果音频文件不存在，尝试从主结果文件读取
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    result_data = json.load(f)
+                
+                # 检查是否为错误文件
+                if "error" in result_data:
+                    logger.warning(f"⚠️ 发现错误文件，尝试清空重置任务: {task_id}")
+                    return clear_and_reset_task(task_id, result_data)
+                
+                if "audioMeta" in result_data:
+                    audio_meta = result_data.get("audioMeta", {})
+                    video_url = audio_meta.get("file_path", "")
+                    platform = audio_meta.get("platform", "")
+                    title = audio_meta.get("title", "未知标题")
+                    
+                    if video_url and platform:
+                        task_data = {
+                            'video_url': video_url,
+                            'platform': platform,
+                            'quality': DownloadQuality.AUDIO,
+                            'model_name': 'gpt-4o-mini',
+                            'provider_id': 'openai',
+                            'screenshot': False,
+                            'link': False,
+                            'format': [],
+                            'style': '简洁',
+                            'extras': None,
+                            'video_understanding': False,
+                            'video_interval': 0,
+                            'grid_size': [],
+                            'title': title
+                        }
+                        
+                        task_queue.add_task(
+                            task_type=TaskType.SINGLE_VIDEO, 
+                            data=task_data,
+                            task_id=task_id
+                        )
+                        return True
+                else:
+                    # 结果文件格式不正确，调用删除老记录重新队列执行
+                    logger.warning(f"⚠️ 结果文件格式不正确: {task_id}")
+                    logger.info(f"🔄 结果文件格式不正确，尝试清空重置任务: {task_id}")
+                    return clear_and_reset_task(task_id, result_data)
+                        
+            except Exception as e:
+                logger.error(f"❌ 从结果文件重建任务失败: {task_id}, {e}")
+                # 读取结果文件失败，调用删除老记录重新队列执行
+                logger.info(f"🔄 结果文件读取失败，尝试清空重置任务: {task_id}")
+                return clear_and_reset_task(task_id)
+        else:
+            # 未找到任务相关文件，调用删除老记录重新队列执行
+            logger.warning(f"⚠️ 未找到任务相关文件: {task_id}")
+            logger.info(f"🔄 未找到任务相关文件，尝试清空重置任务: {task_id}")
+            return clear_and_reset_task(task_id)
+        
+        # 如果都无法重建，尝试清空重置
+        logger.warning(f"⚠️ 无法重建任务，尝试清空重置: {task_id}")
+        return clear_and_reset_task(task_id)
+        
+    except Exception as e:
+        logger.error(f"❌ 重建任务出错: {task_id}, {e}")
+        return False
+
+def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
+    """清空任务相关文件并尝试重置任务"""
+    try:
+        from app.core.task_queue import TaskType
+        from app.enmus.note_enums import DownloadQuality
+        
+        logger.info(f"🧹 开始清空重置任务: {task_id}")
+        
+        # 尝试从多个来源提取原始信息
+        original_url = None
+        original_platform = None
+        original_title = "重置任务"
+        
+        # 1. 首先尝试从错误数据中提取
+        if error_data and isinstance(error_data, dict):
+            # 尝试从错误信息中提取原始URL
+            if "url" in error_data:
+                original_url = error_data["url"]
+            elif "video_url" in error_data:
+                original_url = error_data["video_url"]
+            elif "request_data" in error_data:
+                request_data = error_data["request_data"]
+                if isinstance(request_data, dict):
+                    original_url = request_data.get("video_url")
+                    original_platform = request_data.get("platform")
+                    original_title = request_data.get("title", "重置任务")
+            # 尝试从audioMeta中提取
+            elif "audioMeta" in error_data:
+                audio_meta = error_data["audioMeta"]
+                if isinstance(audio_meta, dict):
+                    file_path = audio_meta.get("file_path", "")
+                    video_id = audio_meta.get("video_id", "")
+                    original_platform = audio_meta.get("platform", "")
+                    original_title = audio_meta.get("title", "重置任务")
+                    
+                    # 如果是BV号，转换为B站URL
+                    if video_id and video_id.startswith("BV"):
+                        original_url = f"https://www.bilibili.com/video/{video_id}"
+                        original_platform = "bilibili"
+                    elif file_path and "http" in file_path:
+                        original_url = file_path
+        
+        # 2. 如果错误数据中没有找到，尝试从任务状态文件中提取
+        if not original_url:
+            status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
+            if os.path.exists(status_path):
+                try:
+                    with open(status_path, "r", encoding="utf-8") as f:
+                        status_data = json.load(f)
+                    
+                    # 从状态文件中提取原始信息
+                    if "original_request" in status_data:
+                        orig_req = status_data["original_request"]
+                        original_url = orig_req.get("video_url")
+                        original_platform = orig_req.get("platform")
+                        original_title = orig_req.get("title", "重置任务")
+                except Exception as e:
+                    logger.warning(f"⚠️ 读取状态文件失败: {e}")
+        
+        # 3. 如果还是没有找到，尝试从音频metadata文件中提取
+        if not original_url:
+            audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
+            if os.path.exists(audio_path):
+                try:
+                    with open(audio_path, "r", encoding="utf-8") as f:
+                        audio_data = json.load(f)
+                    
+                    file_path = audio_data.get("file_path", "")
+                    video_id = audio_data.get("video_id", "")
+                    original_platform = audio_data.get("platform", "")
+                    original_title = audio_data.get("title", "重置任务")
+                    
+                    # 如果是BV号，转换为B站URL
+                    if video_id and video_id.startswith("BV"):
+                        original_url = f"https://www.bilibili.com/video/{video_id}"
+                        original_platform = "bilibili"
+                    elif file_path and "http" in file_path:
+                        original_url = file_path
+                except Exception as e:
+                    logger.warning(f"⚠️ 读取音频metadata文件失败: {e}")
+        
+        # 清空所有相关文件
+        files_to_clean = [
+            f"{task_id}.json",          # 结果文件
+            f"{task_id}.status.json",   # 状态文件
+            f"{task_id}.request.json",  # 原始请求数据文件
+            f"{task_id}_audio.json",    # 音频metadata文件
+            f"{task_id}_audio.wav",     # 音频文件
+            f"{task_id}_audio.mp3",     # 音频文件
+            f"{task_id}.wav",           # 音频文件
+            f"{task_id}.mp3",           # 音频文件
+        ]
+        
+        cleaned_files = []
+        for filename in files_to_clean:
+            file_path = os.path.join(NOTE_OUTPUT_DIR, filename)
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    cleaned_files.append(filename)
+                    logger.info(f"🗑️ 已删除文件: {filename}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 删除文件失败 {filename}: {e}")
+        
+        logger.info(f"🧹 清理完成，删除了 {len(cleaned_files)} 个文件")
+        
+        # 如果找到了原始URL，重新创建任务
+        if original_url:
+            # 尝试识别平台
+            if not original_platform:
+                if "bilibili.com" in original_url or "b23.tv" in original_url:
+                    original_platform = "bilibili"
+                elif "youtube.com" in original_url or "youtu.be" in original_url:
+                    original_platform = "youtube"
+                else:
+                    original_platform = "unknown"
+            
+            logger.info(f"🔄 使用原始URL重新创建任务: {original_url}")
+            
+            task_data = {
+                'video_url': original_url,
+                'platform': original_platform,
+                'quality': DownloadQuality.AUDIO,
+                'model_name': 'gpt-4o-mini',
+                'provider_id': 'openai',
+                'screenshot': False,
+                'link': False,
+                'format': [],
+                'style': '简洁',
+                'extras': None,
+                'video_understanding': False,
+                'video_interval': 0,
+                'grid_size': [],
+                'title': original_title
+            }
+            
+            # 使用原task_id重新创建任务
+            new_task_id = task_queue.add_task(
+                task_type=TaskType.SINGLE_VIDEO, 
+                data=task_data,
+                task_id=task_id
+            )
+            
+            logger.info(f"✅ 任务清空重置成功: {task_id} -> 新URL: {original_url}")
+            return True
+        else:
+            logger.warning(f"⚠️ 无法找到原始URL，只能清空文件: {task_id}， {error_data}")
+            # 即使无法重新创建，清空文件也算成功
+            return len(cleaned_files) > 0
+        
+    except Exception as e:
+        logger.error(f"❌ 清空重置任务失败: {task_id}, {e}")
+        return False
+
+class ValidateTasksRequest(BaseModel):
+    """验证任务请求模型"""
+    task_ids: List[str]
+
+@router.post("/validate_tasks")
+def validate_tasks(request: ValidateTasksRequest):
+    """验证前端任务ID列表，返回真正需要重试的任务状态"""
+    try:
+        task_ids = request.task_ids
+        validation_results = []
+        
+        for task_id in task_ids:
+            # 检查任务队列中的状态
+            queue_task = task_queue.get_task_status(task_id)
+            if queue_task:
+                # 任务在队列中，返回队列状态
+                validation_results.append({
+                    "task_id": task_id,
+                    "exists_in_queue": True,
+                    "status": queue_task.status.value,
+                    "needs_retry": queue_task.status != QueueTaskStatus.SUCCESS,
+                    "error_message": queue_task.error_message
+                })
+            else:
+                # 任务不在队列中，检查文件系统
+                status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
+                result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+                
+                if os.path.exists(status_path):
+                    try:
+                        with open(status_path, "r", encoding="utf-8") as f:
+                            status_content = json.load(f)
+                        status = status_content.get("status")
+                        validation_results.append({
+                            "task_id": task_id,
+                            "exists_in_queue": False,
+                            "status": status,
+                            "needs_retry": status != TaskStatus.SUCCESS.value,
+                            "error_message": status_content.get("message")
+                        })
+                    except Exception as e:
+                        validation_results.append({
+                            "task_id": task_id,
+                            "exists_in_queue": False,
+                            "status": "UNKNOWN",
+                            "needs_retry": True,
+                            "error_message": f"读取状态文件失败: {str(e)}"
+                        })
+                elif os.path.exists(result_path):
+                    # 只有结果文件，说明任务已完成
+                    validation_results.append({
+                        "task_id": task_id,
+                        "exists_in_queue": False,
+                        "status": TaskStatus.SUCCESS.value,
+                        "needs_retry": False,
+                        "error_message": None
+                    })
+                else:
+                    # 什么都没有，任务不存在
+                    validation_results.append({
+                        "task_id": task_id,
+                        "exists_in_queue": False,
+                        "status": "NOT_FOUND",
+                        "needs_retry": False,
+                        "error_message": "任务不存在"
+                    })
+        
+        # 统计结果
+        needs_retry_count = len([r for r in validation_results if r["needs_retry"]])
+        total_tasks = len(validation_results)
+        
+        logger.info(f"✅ 任务验证完成: 总数={total_tasks}, 需重试={needs_retry_count}")
+        
+        return R.success({
+            "validation_results": validation_results,
+            "total_tasks": total_tasks,
+            "needs_retry_count": needs_retry_count,
+            "message": f"验证完成：{total_tasks}个任务中有{needs_retry_count}个需要重试"
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ 验证任务状态出错: {e}")
+        return R.error(f"验证任务状态失败: {str(e)}")
+
 class ForceRetryRequest(BaseModel):
     """强制重试请求模型"""
     model_name: Optional[str] = None
@@ -713,10 +1186,10 @@ def force_retry_all_tasks(request: Optional[ForceRetryRequest] = None):
         return R.error(f"强制批量重试失败: {str(e)}")
 
 @router.post("/force_retry_task/{task_id}")
-def force_retry_task(task_id: str):
+def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
     """强制重试单个任务（包括成功状态的任务）"""
     try:
-        from app.core.task_queue import TaskStatus as QueueTaskStatus
+        from app.core.task_queue import TaskStatus as QueueTaskStatus, TaskType
         
         # 首先检查任务队列中是否存在该任务
         queue_task = task_queue.get_task_status(task_id)
@@ -725,6 +1198,20 @@ def force_retry_task(task_id: str):
             with task_queue._lock:
                 task = task_queue.tasks.get(task_id)
                 if task:
+                    # 如果有新的配置，更新任务数据
+                    if request and hasattr(request, 'model_name') and request.model_name:
+                        task.data['model_name'] = request.model_name
+                    if request and hasattr(request, 'provider_id') and request.provider_id:
+                        task.data['provider_id'] = request.provider_id
+                    if request and hasattr(request, 'style') and request.style:
+                        task.data['style'] = request.style
+                    if request and hasattr(request, 'format') and request.format:
+                        task.data['format'] = request.format
+                    if request and hasattr(request, 'video_understanding') and request.video_understanding is not None:
+                        task.data['video_understanding'] = request.video_understanding
+                    if request and hasattr(request, 'video_interval') and request.video_interval is not None:
+                        task.data['video_interval'] = request.video_interval
+                    
                     # 重置任务状态
                     task.status = QueueTaskStatus.PENDING
                     task.started_at = None
@@ -743,8 +1230,459 @@ def force_retry_task(task_id: str):
                 else:
                     return R.error("任务不存在")
         
-        return R.error("任务不存在于队列中")
+        # 任务不在队列中，优先尝试从持久化的原始请求数据重建
+        logger.info(f"🔍 任务不在队列中，尝试从持久化的原始请求数据重建: {task_id}")
+        
+        try:
+            # 加载持久化的原始请求数据
+            original_request_data = load_original_request_data(task_id)
+            
+            if original_request_data:
+                video_url = original_request_data.get('video_url')
+                platform = original_request_data.get('platform')
+                title = original_request_data.get('title', '未知标题')
+                
+                if video_url and platform:
+                    from app.enmus.note_enums import DownloadQuality
+                    
+                    # 构建任务数据，使用持久化数据，可能会被请求中的新配置覆盖
+                    task_data = {
+                        'video_url': video_url,
+                        'platform': platform,
+                        'quality': original_request_data.get('quality', DownloadQuality.AUDIO),
+                        'model_name': request.model_name if request and request.model_name else original_request_data.get('model_name', 'gpt-4o-mini'),
+                        'provider_id': request.provider_id if request and request.provider_id else original_request_data.get('provider_id', 'openai'),
+                        'screenshot': original_request_data.get('screenshot', False),
+                        'link': original_request_data.get('link', False),
+                        'format': request.format if request and request.format else original_request_data.get('format', []),
+                        'style': request.style if request and request.style else original_request_data.get('style', '简洁'),
+                        'extras': original_request_data.get('extras', None),
+                        'video_understanding': request.video_understanding if request and request.video_understanding is not None else original_request_data.get('video_understanding', False),
+                        'video_interval': request.video_interval if request and request.video_interval is not None else original_request_data.get('video_interval', 0),
+                        'grid_size': original_request_data.get('grid_size', []),
+                        'title': title
+                    }
+                    
+                    # 使用原task_id重新创建任务
+                    new_task_id = task_queue.add_task(
+                        task_type=TaskType.SINGLE_VIDEO, 
+                        data=task_data,
+                        task_id=task_id  # 使用原有的task_id
+                    )
+                    
+                    logger.info(f"✅ 从持久化原始请求数据重建任务成功: {task_id}, 标题: {title}")
+                    return R.success({
+                        "message": f"任务已从持久化数据重建并重新提交，标题: {title}",
+                        "task_id": task_id,
+                        "video_url": video_url,
+                        "title": title
+                    })
+                else:
+                    logger.warning(f"⚠️ 持久化数据中缺少必要的video_url或platform: {task_id}")
+            else:
+                logger.info(f"📋 未找到持久化的原始请求数据: {task_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ 从持久化数据重建任务失败: {task_id}, {e}")
+        
+        # 任务不在队列中，且没有持久化数据，尝试从文件系统重建任务
+        logger.info(f"🔍 尝试从文件系统重建任务: {task_id}")
+        
+        # 检查结果文件是否存在（包含原始任务数据）
+        result_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.json")
+        audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
+        
+        # 首先尝试从音频metadata文件获取信息（分离文件模式）
+        if os.path.exists(audio_path):
+            try:
+                with open(audio_path, "r", encoding="utf-8") as f:
+                    audio_data = json.load(f)
+                
+                # 从音频文件提取原始任务数据
+                video_url = audio_data.get("file_path", "")
+                platform = audio_data.get("platform", "")
+                title = audio_data.get("title", "未知标题")
+                
+                if video_url and platform:
+                    # 重建任务数据（使用默认配置）
+                    from app.enmus.note_enums import DownloadQuality
+                    
+                    task_data = {
+                        'video_url': video_url,
+                        'platform': platform,
+                        'quality': DownloadQuality.AUDIO,
+                        'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
+                        'provider_id': request.provider_id if request and request.provider_id else 'openai',
+                        'screenshot': False,
+                        'link': False,
+                        'format': request.format if request and request.format else [],
+                        'style': request.style if request and request.style else '简洁',
+                        'extras': None,
+                        'video_understanding': request.video_understanding if request and request.video_understanding is not None else False,
+                        'video_interval': request.video_interval if request and request.video_interval is not None else 0,
+                        'grid_size': [],
+                        'title': title
+                    }
+                    
+                    # 使用原task_id重新创建任务
+                    new_task_id = task_queue.add_task(
+                        task_type=TaskType.SINGLE_VIDEO, 
+                        data=task_data,
+                        task_id=task_id  # 使用原有的task_id
+                    )
+                    
+                    logger.info(f"✅ 从音频metadata文件重建任务成功: {task_id}")
+                    return R.success({
+                        "message": f"任务已从音频文件重建并重新提交，标题: {title}",
+                        "task_id": task_id
+                    })
+                    
+            except Exception as e:
+                logger.error(f"❌ 读取音频metadata文件失败: {task_id}, {e}")
+                # 第一种失败：读取音频metadata文件失败，调用删除老记录重新队列执行
+                logger.info(f"🔄 读取音频metadata文件失败，尝试清空重置任务: {task_id}")
+                success = clear_and_reset_task(task_id)
+                if success:
+                    return R.success({
+                        "message": "音频文件读取失败，已清空重置并重新提交任务",
+                        "task_id": task_id
+                    })
+                else:
+                    return R.error("音频文件读取失败，清空重置任务也失败")
+        
+        # 如果音频文件不存在或失败，尝试从主结果文件读取
+        if os.path.exists(result_path):
+            try:
+                with open(result_path, "r", encoding="utf-8") as f:
+                    result_data = json.load(f)
+                
+                # 检查是否为错误文件
+                if "error" in result_data:
+                    logger.warning(f"⚠️ 发现错误文件，尝试清空重置任务: {task_id}")
+                    success = clear_and_reset_task(task_id, result_data)
+                    if success:
+                        return R.success({
+                            "message": "发现错误文件，已清空重置并重新提交任务",
+                            "task_id": task_id
+                        })
+                    else:
+                        return R.error("发现错误文件，清空重置任务失败")
+                
+                # 从结果文件中提取原始任务数据
+                if "audioMeta" in result_data and "transcript" in result_data:
+                    # 这是一个完整的结果文件，包含原始数据
+                    audio_meta = result_data.get("audioMeta", {})
+                    video_url = audio_meta.get("file_path", "")
+                    platform = audio_meta.get("platform", "")
+                    title = audio_meta.get("title", "未知标题")
+                    
+                    if video_url and platform:
+                        # 重建任务数据（使用默认配置）
+                        from app.enmus.note_enums import DownloadQuality
+                        
+                        task_data = {
+                            'video_url': video_url,
+                            'platform': platform,
+                            'quality': DownloadQuality.AUDIO,
+                            'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
+                            'provider_id': request.provider_id if request and request.provider_id else 'openai',
+                            'screenshot': False,
+                            'link': False,
+                            'format': request.format if request and request.format else [],
+                            'style': request.style if request and request.style else '简洁',
+                            'extras': None,
+                            'video_understanding': request.video_understanding if request and request.video_understanding is not None else False,
+                            'video_interval': request.video_interval if request and request.video_interval is not None else 0,
+                            'grid_size': [],
+                            'title': title
+                        }
+                        
+                        # 使用原task_id重新创建任务
+                        new_task_id = task_queue.add_task(
+                            task_type=TaskType.SINGLE_VIDEO, 
+                            data=task_data,
+                            task_id=task_id  # 使用原有的task_id
+                        )
+                        
+                        logger.info(f"✅ 从结果文件重建任务成功: {task_id}")
+                        return R.success({
+                            "message": f"任务已从结果文件重建并重新提交，标题: {title}",
+                            "task_id": task_id
+                        })
+                    else:
+                        logger.warning(f"⚠️ 结果文件中缺少必要的视频信息: {task_id}")
+                        # 结果文件中缺少必要信息，也调用清空重置
+                        logger.info(f"🔄 结果文件缺少视频信息，尝试清空重置任务: {task_id}")
+                        success = clear_and_reset_task(task_id, result_data)
+                        if success:
+                            return R.success({
+                                "message": "结果文件缺少必要信息，已清空重置并重新提交任务",
+                                "task_id": task_id
+                            })
+                        else:
+                            return R.error("结果文件缺少必要信息，清空重置任务失败")
+                else:
+                    logger.warning(f"⚠️ 结果文件格式不正确: {task_id}")
+                    # 第二种失败：结果文件格式不正确，调用删除老记录重新队列执行
+                    logger.info(f"🔄 结果文件格式不正确，尝试清空重置任务: {task_id}")
+                    success = clear_and_reset_task(task_id, result_data)
+                    if success:
+                        return R.success({
+                            "message": "结果文件格式不正确，已清空重置并重新提交任务",
+                            "task_id": task_id
+                        })
+                    else:
+                        return R.error("结果文件格式不正确，清空重置任务失败")
+                    
+            except Exception as e:
+                logger.error(f"❌ 读取结果文件失败: {task_id}, {e}")
+                # 读取结果文件失败，也调用清空重置
+                logger.info(f"🔄 读取结果文件失败，尝试清空重置任务: {task_id}")
+                success = clear_and_reset_task(task_id)
+                if success:
+                    return R.success({
+                        "message": "结果文件读取失败，已清空重置并重新提交任务",
+                        "task_id": task_id
+                    })
+                else:
+                    return R.error(f"结果文件读取失败，清空重置任务也失败: {str(e)}")
+        else:
+            logger.warning(f"⚠️ 未找到任务相关文件: {task_id}")
+            # 第三种失败：未找到任务相关文件，调用删除老记录重新队列执行
+            logger.info(f"🔄 未找到任务相关文件，尝试清空重置任务: {task_id}")
+            success = clear_and_reset_task(task_id)
+            if success:
+                return R.success({
+                    "message": "未找到任务相关文件，已尝试清空重置任务",
+                    "task_id": task_id
+                })
+            else:
+                return R.error("未找到任务相关文件，无法重建任务")
         
     except Exception as e:
         logger.error(f"❌ 强制重试任务失败: {e}")
         return R.error(f"强制重试任务失败: {str(e)}")
+
+@router.post("/force_restart_task/{task_id}")
+def force_restart_task(task_id: str):
+    """强制清理并重新开始任务 - 完全从头开始，清理所有相关文件"""
+    try:
+        from app.core.task_queue import TaskStatus as QueueTaskStatus, TaskType
+        import glob
+        
+        logger.info(f"🔥 开始强制重新开始任务: {task_id}")
+        
+        # 1. 首先尝试从音频文件获取原始任务数据
+        audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
+        task_data = None
+        
+        if os.path.exists(audio_path):
+            try:
+                with open(audio_path, "r", encoding="utf-8") as f:
+                    audio_data = json.load(f)
+                
+                # 从音频文件提取原始任务数据
+                video_url = audio_data.get("file_path", "")
+                # 如果是BV号，转换为B站URL
+                if "BV" in video_url:
+                    video_id = os.path.basename(video_url).replace(".mp3", "")
+                    video_url = f"https://www.bilibili.com/video/{video_id}"
+                elif not video_url.startswith("http"):
+                    # 如果是本地文件路径，尝试从video_id构建URL
+                    video_id = audio_data.get("video_id", "")
+                    if video_id and video_id.startswith("BV"):
+                        video_url = f"https://www.bilibili.com/video/{video_id}"
+                    else:
+                        video_url = audio_data.get("file_path", "")
+                
+                platform = audio_data.get("platform", "bilibili")
+                title = audio_data.get("title", "未知标题")
+                
+                if video_url and platform:
+                    # 重建任务数据（使用默认配置，可以后续调整）
+                    from app.enmus.note_enums import DownloadQuality
+                    
+                    task_data = {
+                        'video_url': video_url,
+                        'platform': platform,
+                        'quality': DownloadQuality.AUDIO,
+                        'model_name': 'gpt-4o-mini',  # 默认模型
+                        'provider_id': 'openai',      # 默认提供者
+                        'screenshot': False,
+                        'link': False,
+                        'format': [],
+                        'style': '简洁',
+                        'extras': None,
+                        'video_understanding': False,
+                        'video_interval': 0,
+                        'grid_size': [],
+                        'title': title
+                    }
+                    
+                    logger.info(f"✅ 从音频文件获取任务数据成功: {title} ({video_url})")
+                    
+            except Exception as e:
+                logger.error(f"❌ 读取音频文件失败: {task_id}, {e}")
+        
+        # 如果没有获取到任务数据，返回错误
+        if not task_data:
+            logger.error(f"❌ 无法获取任务数据，无法重新开始: {task_id}")
+            return R.error("无法获取原始任务数据，请确保任务文件存在")
+        
+        # 2. 清理所有相关文件
+        logger.info(f"🧹 开始清理任务相关文件: {task_id}")
+        
+        # 清理模式列表
+        cleanup_patterns = [
+            f"{task_id}.json",
+            f"{task_id}.status.json", 
+            f"{task_id}.request.json",  # 原始请求数据文件
+            f"{task_id}_*.json",
+            f"{task_id}_*.md",
+            f"{task_id}_*.txt"
+        ]
+        
+        cleaned_files = []
+        for pattern in cleanup_patterns:
+            file_pattern = os.path.join(NOTE_OUTPUT_DIR, pattern)
+            matching_files = glob.glob(file_pattern)
+            for file_path in matching_files:
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        cleaned_files.append(os.path.basename(file_path))
+                        logger.info(f"🗑️ 已删除文件: {os.path.basename(file_path)}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 删除文件失败: {os.path.basename(file_path)}, {e}")
+        
+        # 3. 从任务队列中移除旧任务（如果存在）
+        with task_queue._lock:
+            if task_id in task_queue.tasks:
+                del task_queue.tasks[task_id]
+                logger.info(f"🗑️ 已从任务队列移除旧任务: {task_id}")
+        
+        # 4. 创建全新的任务
+        new_task_id = task_queue.add_task(
+            task_type=TaskType.SINGLE_VIDEO, 
+            data=task_data,
+            task_id=task_id  # 使用原有的task_id
+        )
+        
+        logger.info(f"✅ 强制重新开始任务成功: {task_id}")
+        logger.info(f"📋 任务详情: {task_data.get('title', '未知标题')}")
+        logger.info(f"🧹 清理了 {len(cleaned_files)} 个文件: {', '.join(cleaned_files)}")
+        
+        return R.success({
+            "message": f"任务已强制重新开始，标题: {task_data.get('title', '未知标题')}",
+            "task_id": task_id,
+            "video_url": task_data.get('video_url', ''),
+            "title": task_data.get('title', '未知标题'),
+            "cleaned_files": cleaned_files,
+            "restart_time": time.time()
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ 强制重新开始任务失败: {task_id}, {e}")
+        return R.error(f"强制重新开始任务失败: {str(e)}")
+
+@router.post("/clear_reset_task/{task_id}")
+def clear_reset_task(task_id: str):
+    """清空并重置单个任务（删除所有相关文件并重新创建）"""
+    try:
+        logger.info(f"🧹 手动清空重置任务: {task_id}")
+        
+        # 首先从队列中移除任务（如果存在）
+        with task_queue._lock:
+            if task_id in task_queue.tasks:
+                del task_queue.tasks[task_id]
+                logger.info(f"🗑️ 已从队列中移除任务: {task_id}")
+        
+        # 执行清空重置
+        success = clear_and_reset_task(task_id)
+        
+        if success:
+            logger.info(f"✅ 任务清空重置成功: {task_id}")
+            return R.success({
+                "message": "任务已清空重置，重新进入队列",
+                "task_id": task_id
+            })
+        else:
+            logger.warning(f"⚠️ 任务清空重置部分失败: {task_id}")
+            return R.success({
+                "message": "任务文件已清空，但无法重新创建（缺少原始URL）",
+                "task_id": task_id
+            })
+        
+    except Exception as e:
+        logger.error(f"❌ 清空重置任务出错: {task_id}, {e}")
+        return R.error(f"清空重置任务失败: {str(e)}")
+
+class BatchClearResetRequest(BaseModel):
+    """批量清空重置请求模型"""
+    task_ids: List[str]
+    force_clear: Optional[bool] = False  # 是否强制清空（即使无法重新创建）
+
+@router.post("/batch_clear_reset_tasks")
+def batch_clear_reset_tasks(request: BatchClearResetRequest):
+    """批量清空重置任务"""
+    try:
+        task_ids = request.task_ids
+        force_clear = request.force_clear
+        
+        logger.info(f"🧹 批量清空重置任务: {len(task_ids)} 个任务")
+        
+        results = []
+        success_count = 0
+        
+        for task_id in task_ids:
+            try:
+                # 从队列中移除任务
+                with task_queue._lock:
+                    if task_id in task_queue.tasks:
+                        del task_queue.tasks[task_id]
+                
+                # 执行清空重置
+                success = clear_and_reset_task(task_id)
+                
+                if success:
+                    results.append({
+                        "task_id": task_id,
+                        "status": "success",
+                        "message": "清空重置成功"
+                    })
+                    success_count += 1
+                else:
+                    if force_clear:
+                        # 强制清空模式：即使无法重新创建也清空文件
+                        results.append({
+                            "task_id": task_id,
+                            "status": "partial",
+                            "message": "文件已清空，但无法重新创建"
+                        })
+                        success_count += 1
+                    else:
+                        results.append({
+                            "task_id": task_id,
+                            "status": "failed",
+                            "message": "清空重置失败"
+                        })
+                
+            except Exception as e:
+                results.append({
+                    "task_id": task_id,
+                    "status": "error",
+                    "message": f"处理出错: {str(e)}"
+                })
+        
+        logger.info(f"✅ 批量清空重置完成: 成功={success_count}, 总数={len(task_ids)}")
+        
+        return R.success({
+            "results": results,
+            "success_count": success_count,
+            "total_count": len(task_ids),
+            "message": f"批量清空重置完成，成功处理 {success_count}/{len(task_ids)} 个任务"
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ 批量清空重置任务出错: {e}")
+        return R.error(f"批量清空重置任务失败: {str(e)}")
