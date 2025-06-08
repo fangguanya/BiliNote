@@ -808,29 +808,34 @@ def rebuild_task_from_files(task_id: str) -> bool:
                 title = audio_data.get("title", "未知标题")
                 
                 if video_url and platform:
-                    task_data = {
-                        'video_url': video_url,
-                        'platform': platform,
-                        'quality': DownloadQuality.AUDIO,
-                        'model_name': 'gpt-4o-mini',
-                        'provider_id': 'openai',
-                        'screenshot': False,
-                        'link': False,
-                        'format': [],
-                        'style': '简洁',
-                        'extras': None,
-                        'video_understanding': False,
-                        'video_interval': 0,
-                        'grid_size': [],
-                        'title': title
-                    }
-                    
-                    task_queue.add_task(
-                        task_type=TaskType.SINGLE_VIDEO, 
-                        data=task_data,
-                        task_id=task_id
-                    )
-                    return True
+                    try:
+                        task_data = {
+                            'video_url': video_url,
+                            'platform': platform,
+                            'quality': DownloadQuality.AUDIO,
+                            'model_name': 'gpt-4o-mini',
+                            'provider_id': 'openai',
+                            'screenshot': False,
+                            'link': False,
+                            'format': [],
+                            'style': '简洁',
+                            'extras': None,
+                            'video_understanding': False,
+                            'video_interval': 0,
+                            'grid_size': [],
+                            'title': title
+                        }
+                        
+                        task_queue.add_task(
+                            task_type=TaskType.SINGLE_VIDEO, 
+                            data=task_data,
+                            task_id=task_id
+                        )
+                        return True
+                    except Exception as task_error:
+                        logger.error(f"❌ 从音频metadata创建任务失败: {task_id}, {task_error}")
+                        # 创建任务失败，但继续尝试清空重置
+                        return clear_and_reset_task(task_id)
                     
             except Exception as e:
                 logger.error(f"❌ 从音频metadata重建任务失败: {task_id}, {e}")
@@ -856,29 +861,34 @@ def rebuild_task_from_files(task_id: str) -> bool:
                     title = audio_meta.get("title", "未知标题")
                     
                     if video_url and platform:
-                        task_data = {
-                            'video_url': video_url,
-                            'platform': platform,
-                            'quality': DownloadQuality.AUDIO,
-                            'model_name': 'gpt-4o-mini',
-                            'provider_id': 'openai',
-                            'screenshot': False,
-                            'link': False,
-                            'format': [],
-                            'style': '简洁',
-                            'extras': None,
-                            'video_understanding': False,
-                            'video_interval': 0,
-                            'grid_size': [],
-                            'title': title
-                        }
-                        
-                        task_queue.add_task(
-                            task_type=TaskType.SINGLE_VIDEO, 
-                            data=task_data,
-                            task_id=task_id
-                        )
-                        return True
+                        try:
+                            task_data = {
+                                'video_url': video_url,
+                                'platform': platform,
+                                'quality': DownloadQuality.AUDIO,
+                                'model_name': 'gpt-4o-mini',
+                                'provider_id': 'openai',
+                                'screenshot': False,
+                                'link': False,
+                                'format': [],
+                                'style': '简洁',
+                                'extras': None,
+                                'video_understanding': False,
+                                'video_interval': 0,
+                                'grid_size': [],
+                                'title': title
+                            }
+                            
+                            task_queue.add_task(
+                                task_type=TaskType.SINGLE_VIDEO, 
+                                data=task_data,
+                                task_id=task_id
+                            )
+                            return True
+                        except Exception as task_error:
+                            logger.error(f"❌ 从结果文件创建任务失败: {task_id}, {task_error}")
+                            # 创建任务失败，但继续尝试清空重置
+                            return clear_and_reset_task(task_id, result_data)
                 else:
                     # 结果文件格式不正确，调用删除老记录重新队列执行
                     logger.warning(f"⚠️ 结果文件格式不正确: {task_id}")
@@ -917,8 +927,27 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
         original_platform = None
         original_title = "重置任务"
         
-        # 1. 首先尝试从错误数据中提取
-        if error_data and isinstance(error_data, dict):
+        # 1. 优先从持久化的原始请求数据中提取
+        request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
+        if os.path.exists(request_file_path):
+            try:
+                with open(request_file_path, "r", encoding="utf-8") as f:
+                    request_data = json.load(f)
+                
+                original_request = request_data.get("original_request", {})
+                if original_request:
+                    original_url = original_request.get("video_url")
+                    original_platform = original_request.get("platform")
+                    original_title = original_request.get("title", "重置任务")
+                    
+                    if original_url:
+                        logger.info(f"✅ 从持久化请求数据中找到原始URL: {original_url}")
+                        
+            except Exception as e:
+                logger.warning(f"⚠️ 读取持久化请求数据失败: {e}")
+        
+        # 2. 如果持久化数据中没有找到，尝试从错误数据中提取
+        if not original_url and error_data and isinstance(error_data, dict):
             # 尝试从错误信息中提取原始URL
             if "url" in error_data:
                 original_url = error_data["url"]
@@ -946,7 +975,7 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
                     elif file_path and "http" in file_path:
                         original_url = file_path
         
-        # 2. 如果错误数据中没有找到，尝试从任务状态文件中提取
+        # 3. 如果错误数据中没有找到，尝试从任务状态文件中提取
         if not original_url:
             status_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.status.json")
             if os.path.exists(status_path):
@@ -963,7 +992,7 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
                 except Exception as e:
                     logger.warning(f"⚠️ 读取状态文件失败: {e}")
         
-        # 3. 如果还是没有找到，尝试从音频metadata文件中提取
+        # 4. 如果还是没有找到，尝试从音频metadata文件中提取
         if not original_url:
             audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
             if os.path.exists(audio_path):
@@ -975,21 +1004,52 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
                     video_id = audio_data.get("video_id", "")
                     original_platform = audio_data.get("platform", "")
                     original_title = audio_data.get("title", "重置任务")
+                    raw_info = audio_data.get("raw_info", {})
                     
-                    # 如果是BV号，转换为B站URL
-                    if video_id and video_id.startswith("BV"):
-                        original_url = f"https://www.bilibili.com/video/{video_id}"
-                        original_platform = "bilibili"
-                    elif file_path and "http" in file_path:
+                    # 优先检查 raw_info 中是否有原始URL信息
+                    if raw_info and isinstance(raw_info, dict):
+                        if "webpage_url" in raw_info:
+                            original_url = raw_info["webpage_url"]
+                            logger.info(f"🔍 从raw_info中找到原始URL: {original_url}")
+                        elif "original_url" in raw_info:
+                            original_url = raw_info["original_url"]
+                            logger.info(f"🔍 从raw_info中找到原始URL: {original_url}")
+                    
+                    # 如果 raw_info 中没有，尝试用 video_id 重构
+                    if not original_url and video_id:
+                        if video_id.startswith("BV"):
+                            # 检查 video_id 中是否包含分P信息（例如：BV1pwj2zxEL9_p64）
+                            if "_p" in video_id:
+                                base_bv, p_part = video_id.split("_p", 1)
+                                try:
+                                    p_num = int(p_part)
+                                    original_url = f"https://www.bilibili.com/video/{base_bv}?p={p_num}"
+                                    logger.info(f"🔄 重构分P视频URL: {video_id} -> {original_url}")
+                                except ValueError:
+                                    # 分P编号无效，使用基础BV号
+                                    original_url = f"https://www.bilibili.com/video/{base_bv}"
+                                    logger.info(f"🔄 重构视频URL (忽略无效分P): {video_id} -> {original_url}")
+                            else:
+                                # 普通BV号
+                                original_url = f"https://www.bilibili.com/video/{video_id}"
+                                logger.info(f"🔄 重构视频URL: {video_id} -> {original_url}")
+                            original_platform = "bilibili"
+                        else:
+                            logger.warning(f"⚠️ 无法识别的video_id格式: {video_id}")
+                    
+                    # 最后检查file_path是否包含HTTP URL（用于其他平台）
+                    if not original_url and file_path and "http" in file_path:
                         original_url = file_path
+                        logger.info(f"🔄 使用file_path作为URL: {file_path}")
+                        
                 except Exception as e:
                     logger.warning(f"⚠️ 读取音频metadata文件失败: {e}")
         
-        # 清空所有相关文件
+        # 清空相关文件（保留原始请求数据文件）
         files_to_clean = [
             f"{task_id}.json",          # 结果文件
             f"{task_id}.status.json",   # 状态文件
-            f"{task_id}.request.json",  # 原始请求数据文件
+            # f"{task_id}.request.json",  # 🔒 保留原始请求数据文件，不删除
             f"{task_id}_audio.json",    # 音频metadata文件
             f"{task_id}_audio.wav",     # 音频文件
             f"{task_id}_audio.mp3",     # 音频文件
@@ -1023,32 +1083,75 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
             
             logger.info(f"🔄 使用原始URL重新创建任务: {original_url}")
             
-            task_data = {
-                'video_url': original_url,
-                'platform': original_platform,
-                'quality': DownloadQuality.AUDIO,
-                'model_name': 'gpt-4o-mini',
-                'provider_id': 'openai',
-                'screenshot': False,
-                'link': False,
-                'format': [],
-                'style': '简洁',
-                'extras': None,
-                'video_understanding': False,
-                'video_interval': 0,
-                'grid_size': [],
-                'title': original_title
-            }
-            
-            # 使用原task_id重新创建任务
-            new_task_id = task_queue.add_task(
-                task_type=TaskType.SINGLE_VIDEO, 
-                data=task_data,
-                task_id=task_id
-            )
-            
-            logger.info(f"✅ 任务清空重置成功: {task_id} -> 新URL: {original_url}")
-            return True
+            try:
+                task_data = {
+                    'video_url': original_url,
+                    'platform': original_platform,
+                    'quality': DownloadQuality.AUDIO,
+                    'model_name': 'gpt-4o-mini',
+                    'provider_id': 'openai',
+                    'screenshot': False,
+                    'link': False,
+                    'format': [],
+                    'style': '简洁',
+                    'extras': None,
+                    'video_understanding': False,
+                    'video_interval': 0,
+                    'grid_size': [],
+                    'title': original_title
+                }
+                
+                # 使用原task_id重新创建任务
+                new_task_id = task_queue.add_task(
+                    task_type=TaskType.SINGLE_VIDEO, 
+                    data=task_data,
+                    task_id=task_id
+                )
+                
+                logger.info(f"✅ 任务队列添加成功: {task_id}")
+                
+                # 更新原始请求数据文件（保存新的任务数据）
+                try:
+                    updated_request_data = {
+                        "task_id": task_id,
+                        "created_at": time.time(),
+                        "created_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                        "reset_count": 1,  # 标记这是重置任务
+                        "original_request": {
+                            "video_url": original_url,
+                            "platform": original_platform,
+                            "title": original_title,
+                            "quality": task_data.get('quality', DownloadQuality.AUDIO),
+                            "model_name": task_data.get('model_name', 'gpt-4o-mini'),
+                            "provider_id": task_data.get('provider_id', 'openai'),
+                            "screenshot": task_data.get('screenshot', False),
+                            "link": task_data.get('link', False),
+                            "format": task_data.get('format', []),
+                            "style": task_data.get('style', '简洁'),
+                            "extras": task_data.get('extras', None),
+                            "video_understanding": task_data.get('video_understanding', False),
+                            "video_interval": task_data.get('video_interval', 0),
+                            "grid_size": task_data.get('grid_size', [])
+                        }
+                    }
+                    
+                    request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
+                    with open(request_file_path, "w", encoding="utf-8") as f:
+                        json.dump(updated_request_data, f, ensure_ascii=False, indent=2)
+                    
+                    logger.info(f"📝 已更新原始请求数据文件: {task_id}")
+                    
+                except Exception as save_error:
+                    logger.warning(f"⚠️ 更新原始请求数据文件失败: {save_error}")
+                
+                logger.info(f"✅ 任务清空重置成功: {task_id} -> 新URL: {original_url}")
+                return True
+                
+            except Exception as task_create_error:
+                logger.error(f"❌ 创建任务失败: {task_id}, {task_create_error}")
+                logger.warning(f"⚠️ 任务创建失败但文件已清空，继续处理: {task_id}")
+                # 任务创建失败，但文件清空成功，也认为是部分成功
+                return len(cleaned_files) > 0
         else:
             logger.warning(f"⚠️ 无法找到原始URL，只能清空文件: {task_id}， {error_data}")
             # 即使无法重新创建，清空文件也算成功
@@ -1243,40 +1346,44 @@ def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
                 title = original_request_data.get('title', '未知标题')
                 
                 if video_url and platform:
-                    from app.enmus.note_enums import DownloadQuality
-                    
-                    # 构建任务数据，使用持久化数据，可能会被请求中的新配置覆盖
-                    task_data = {
-                        'video_url': video_url,
-                        'platform': platform,
-                        'quality': original_request_data.get('quality', DownloadQuality.AUDIO),
-                        'model_name': request.model_name if request and request.model_name else original_request_data.get('model_name', 'gpt-4o-mini'),
-                        'provider_id': request.provider_id if request and request.provider_id else original_request_data.get('provider_id', 'openai'),
-                        'screenshot': original_request_data.get('screenshot', False),
-                        'link': original_request_data.get('link', False),
-                        'format': request.format if request and request.format else original_request_data.get('format', []),
-                        'style': request.style if request and request.style else original_request_data.get('style', '简洁'),
-                        'extras': original_request_data.get('extras', None),
-                        'video_understanding': request.video_understanding if request and request.video_understanding is not None else original_request_data.get('video_understanding', False),
-                        'video_interval': request.video_interval if request and request.video_interval is not None else original_request_data.get('video_interval', 0),
-                        'grid_size': original_request_data.get('grid_size', []),
-                        'title': title
-                    }
-                    
-                    # 使用原task_id重新创建任务
-                    new_task_id = task_queue.add_task(
-                        task_type=TaskType.SINGLE_VIDEO, 
-                        data=task_data,
-                        task_id=task_id  # 使用原有的task_id
-                    )
-                    
-                    logger.info(f"✅ 从持久化原始请求数据重建任务成功: {task_id}, 标题: {title}")
-                    return R.success({
-                        "message": f"任务已从持久化数据重建并重新提交，标题: {title}",
-                        "task_id": task_id,
-                        "video_url": video_url,
-                        "title": title
-                    })
+                    try:
+                        from app.enmus.note_enums import DownloadQuality
+                        
+                        # 构建任务数据，使用持久化数据，可能会被请求中的新配置覆盖
+                        task_data = {
+                            'video_url': video_url,
+                            'platform': platform,
+                            'quality': original_request_data.get('quality', DownloadQuality.AUDIO),
+                            'model_name': request.model_name if request and request.model_name else original_request_data.get('model_name', 'gpt-4o-mini'),
+                            'provider_id': request.provider_id if request and request.provider_id else original_request_data.get('provider_id', 'openai'),
+                            'screenshot': original_request_data.get('screenshot', False),
+                            'link': original_request_data.get('link', False),
+                            'format': request.format if request and request.format else original_request_data.get('format', []),
+                            'style': request.style if request and request.style else original_request_data.get('style', '简洁'),
+                            'extras': original_request_data.get('extras', None),
+                            'video_understanding': request.video_understanding if request and request.video_understanding is not None else original_request_data.get('video_understanding', False),
+                            'video_interval': request.video_interval if request and request.video_interval is not None else original_request_data.get('video_interval', 0),
+                            'grid_size': original_request_data.get('grid_size', []),
+                            'title': title
+                        }
+                        
+                        # 使用原task_id重新创建任务
+                        new_task_id = task_queue.add_task(
+                            task_type=TaskType.SINGLE_VIDEO, 
+                            data=task_data,
+                            task_id=task_id  # 使用原有的task_id
+                        )
+                        
+                        logger.info(f"✅ 从持久化原始请求数据重建任务成功: {task_id}, 标题: {title}")
+                        return R.success({
+                            "message": f"任务已从持久化数据重建并重新提交，标题: {title}",
+                            "task_id": task_id,
+                            "video_url": video_url,
+                            "title": title
+                        })
+                    except Exception as task_error:
+                        logger.error(f"❌ 从持久化数据创建任务失败: {task_id}, {task_error}")
+                        logger.warning(f"⚠️ 持久化数据创建任务失败，继续尝试其他方法: {task_id}")
                 else:
                     logger.warning(f"⚠️ 持久化数据中缺少必要的video_url或platform: {task_id}")
             else:
@@ -1304,38 +1411,42 @@ def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
                 title = audio_data.get("title", "未知标题")
                 
                 if video_url and platform:
-                    # 重建任务数据（使用默认配置）
-                    from app.enmus.note_enums import DownloadQuality
-                    
-                    task_data = {
-                        'video_url': video_url,
-                        'platform': platform,
-                        'quality': DownloadQuality.AUDIO,
-                        'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
-                        'provider_id': request.provider_id if request and request.provider_id else 'openai',
-                        'screenshot': False,
-                        'link': False,
-                        'format': request.format if request and request.format else [],
-                        'style': request.style if request and request.style else '简洁',
-                        'extras': None,
-                        'video_understanding': request.video_understanding if request and request.video_understanding is not None else False,
-                        'video_interval': request.video_interval if request and request.video_interval is not None else 0,
-                        'grid_size': [],
-                        'title': title
-                    }
-                    
-                    # 使用原task_id重新创建任务
-                    new_task_id = task_queue.add_task(
-                        task_type=TaskType.SINGLE_VIDEO, 
-                        data=task_data,
-                        task_id=task_id  # 使用原有的task_id
-                    )
-                    
-                    logger.info(f"✅ 从音频metadata文件重建任务成功: {task_id}")
-                    return R.success({
-                        "message": f"任务已从音频文件重建并重新提交，标题: {title}",
-                        "task_id": task_id
-                    })
+                    try:
+                        # 重建任务数据（使用默认配置）
+                        from app.enmus.note_enums import DownloadQuality
+                        
+                        task_data = {
+                            'video_url': video_url,
+                            'platform': platform,
+                            'quality': DownloadQuality.AUDIO,
+                            'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
+                            'provider_id': request.provider_id if request and request.provider_id else 'openai',
+                            'screenshot': False,
+                            'link': False,
+                            'format': request.format if request and request.format else [],
+                            'style': request.style if request and request.style else '简洁',
+                            'extras': None,
+                            'video_understanding': request.video_understanding if request and request.video_understanding is not None else False,
+                            'video_interval': request.video_interval if request and request.video_interval is not None else 0,
+                            'grid_size': [],
+                            'title': title
+                        }
+                        
+                        # 使用原task_id重新创建任务
+                        new_task_id = task_queue.add_task(
+                            task_type=TaskType.SINGLE_VIDEO, 
+                            data=task_data,
+                            task_id=task_id  # 使用原有的task_id
+                        )
+                        
+                        logger.info(f"✅ 从音频metadata文件重建任务成功: {task_id}")
+                        return R.success({
+                            "message": f"任务已从音频文件重建并重新提交，标题: {title}",
+                            "task_id": task_id
+                        })
+                    except Exception as task_error:
+                        logger.error(f"❌ 从音频文件创建任务失败: {task_id}, {task_error}")
+                        logger.warning(f"⚠️ 音频文件创建任务失败，继续尝试其他方法: {task_id}")
                     
             except Exception as e:
                 logger.error(f"❌ 读取音频metadata文件失败: {task_id}, {e}")
@@ -1377,38 +1488,51 @@ def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
                     title = audio_meta.get("title", "未知标题")
                     
                     if video_url and platform:
-                        # 重建任务数据（使用默认配置）
-                        from app.enmus.note_enums import DownloadQuality
-                        
-                        task_data = {
-                            'video_url': video_url,
-                            'platform': platform,
-                            'quality': DownloadQuality.AUDIO,
-                            'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
-                            'provider_id': request.provider_id if request and request.provider_id else 'openai',
-                            'screenshot': False,
-                            'link': False,
-                            'format': request.format if request and request.format else [],
-                            'style': request.style if request and request.style else '简洁',
-                            'extras': None,
-                            'video_understanding': request.video_understanding if request and request.video_understanding is not None else False,
-                            'video_interval': request.video_interval if request and request.video_interval is not None else 0,
-                            'grid_size': [],
-                            'title': title
-                        }
-                        
-                        # 使用原task_id重新创建任务
-                        new_task_id = task_queue.add_task(
-                            task_type=TaskType.SINGLE_VIDEO, 
-                            data=task_data,
-                            task_id=task_id  # 使用原有的task_id
-                        )
-                        
-                        logger.info(f"✅ 从结果文件重建任务成功: {task_id}")
-                        return R.success({
-                            "message": f"任务已从结果文件重建并重新提交，标题: {title}",
-                            "task_id": task_id
-                        })
+                        try:
+                            # 重建任务数据（使用默认配置）
+                            from app.enmus.note_enums import DownloadQuality
+                            
+                            task_data = {
+                                'video_url': video_url,
+                                'platform': platform,
+                                'quality': DownloadQuality.AUDIO,
+                                'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
+                                'provider_id': request.provider_id if request and request.provider_id else 'openai',
+                                'screenshot': False,
+                                'link': False,
+                                'format': request.format if request and request.format else [],
+                                'style': request.style if request and request.style else '简洁',
+                                'extras': None,
+                                'video_understanding': request.video_understanding if request and request.video_understanding is not None else False,
+                                'video_interval': request.video_interval if request and request.video_interval is not None else 0,
+                                'grid_size': [],
+                                'title': title
+                            }
+                            
+                            # 使用原task_id重新创建任务
+                            new_task_id = task_queue.add_task(
+                                task_type=TaskType.SINGLE_VIDEO, 
+                                data=task_data,
+                                task_id=task_id  # 使用原有的task_id
+                            )
+                            
+                            logger.info(f"✅ 从结果文件重建任务成功: {task_id}")
+                            return R.success({
+                                "message": f"任务已从结果文件重建并重新提交，标题: {title}",
+                                "task_id": task_id
+                            })
+                        except Exception as task_error:
+                            logger.error(f"❌ 从结果文件创建任务失败: {task_id}, {task_error}")
+                            logger.warning(f"⚠️ 结果文件创建任务失败，尝试清空重置: {task_id}")
+                            # 创建任务失败，尝试清空重置
+                            success = clear_and_reset_task(task_id, result_data)
+                            if success:
+                                return R.success({
+                                    "message": "结果文件创建任务失败，已清空重置并重新提交任务",
+                                    "task_id": task_id
+                                })
+                            else:
+                                return R.error("结果文件创建任务失败，清空重置任务也失败")
                     else:
                         logger.warning(f"⚠️ 结果文件中缺少必要的视频信息: {task_id}")
                         # 结果文件中缺少必要信息，也调用清空重置
@@ -1472,57 +1596,103 @@ def force_restart_task(task_id: str):
         
         logger.info(f"🔥 开始强制重新开始任务: {task_id}")
         
-        # 1. 首先尝试从音频文件获取原始任务数据
-        audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
+        # 1. 首先尝试从持久化的原始请求数据获取任务数据
+        request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
         task_data = None
         
-        if os.path.exists(audio_path):
+        if os.path.exists(request_file_path):
             try:
-                with open(audio_path, "r", encoding="utf-8") as f:
-                    audio_data = json.load(f)
+                with open(request_file_path, "r", encoding="utf-8") as f:
+                    request_data = json.load(f)
                 
-                # 从音频文件提取原始任务数据
-                video_url = audio_data.get("file_path", "")
-                # 如果是BV号，转换为B站URL
-                if "BV" in video_url:
-                    video_id = os.path.basename(video_url).replace(".mp3", "")
-                    video_url = f"https://www.bilibili.com/video/{video_id}"
-                elif not video_url.startswith("http"):
-                    # 如果是本地文件路径，尝试从video_id构建URL
-                    video_id = audio_data.get("video_id", "")
-                    if video_id and video_id.startswith("BV"):
-                        video_url = f"https://www.bilibili.com/video/{video_id}"
-                    else:
-                        video_url = audio_data.get("file_path", "")
-                
-                platform = audio_data.get("platform", "bilibili")
-                title = audio_data.get("title", "未知标题")
-                
-                if video_url and platform:
-                    # 重建任务数据（使用默认配置，可以后续调整）
-                    from app.enmus.note_enums import DownloadQuality
-                    
-                    task_data = {
-                        'video_url': video_url,
-                        'platform': platform,
-                        'quality': DownloadQuality.AUDIO,
-                        'model_name': 'gpt-4o-mini',  # 默认模型
-                        'provider_id': 'openai',      # 默认提供者
-                        'screenshot': False,
-                        'link': False,
-                        'format': [],
-                        'style': '简洁',
-                        'extras': None,
-                        'video_understanding': False,
-                        'video_interval': 0,
-                        'grid_size': [],
-                        'title': title
-                    }
-                    
-                    logger.info(f"✅ 从音频文件获取任务数据成功: {title} ({video_url})")
+                original_request = request_data.get("original_request", {})
+                if original_request and original_request.get("video_url"):
+                    try:
+                        video_url = original_request.get("video_url")
+                        platform = original_request.get("platform", "bilibili")
+                        title = original_request.get("title", "未知标题")
+                        
+                        from app.enmus.note_enums import DownloadQuality
+                        
+                        task_data = {
+                            'video_url': video_url,
+                            'platform': platform,
+                            'quality': original_request.get('quality', DownloadQuality.AUDIO),
+                            'model_name': original_request.get('model_name', 'gpt-4o-mini'),
+                            'provider_id': original_request.get('provider_id', 'openai'),
+                            'screenshot': original_request.get('screenshot', False),
+                            'link': original_request.get('link', False),
+                            'format': original_request.get('format', []),
+                            'style': original_request.get('style', '简洁'),
+                            'extras': original_request.get('extras', None),
+                            'video_understanding': original_request.get('video_understanding', False),
+                            'video_interval': original_request.get('video_interval', 0),
+                            'grid_size': original_request.get('grid_size', []),
+                            'title': title
+                        }
+                        
+                        logger.info(f"✅ 从持久化请求数据获取任务数据成功: {title} ({video_url})")
+                    except Exception as data_error:
+                        logger.error(f"❌ 从持久化数据构建任务数据失败: {task_id}, {data_error}")
+                        # 如果构建任务数据失败，task_data保持为None
                     
             except Exception as e:
-                logger.error(f"❌ 读取音频文件失败: {task_id}, {e}")
+                logger.error(f"❌ 读取持久化请求数据失败: {task_id}, {e}")
+        
+        # 2. 如果持久化数据不存在，尝试从音频文件获取原始任务数据
+        if not task_data:
+            audio_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}_audio.json")
+            
+            if os.path.exists(audio_path):
+                try:
+                    with open(audio_path, "r", encoding="utf-8") as f:
+                        audio_data = json.load(f)
+                
+                    # 从音频文件提取原始任务数据
+                    video_url = audio_data.get("file_path", "")
+                    # 如果是BV号，转换为B站URL
+                    if "BV" in video_url:
+                        video_id = os.path.basename(video_url).replace(".mp3", "")
+                        video_url = f"https://www.bilibili.com/video/{video_id}"
+                    elif not video_url.startswith("http"):
+                        # 如果是本地文件路径，尝试从video_id构建URL
+                        video_id = audio_data.get("video_id", "")
+                        if video_id and video_id.startswith("BV"):
+                            video_url = f"https://www.bilibili.com/video/{video_id}"
+                        else:
+                            video_url = audio_data.get("file_path", "")
+                    
+                    platform = audio_data.get("platform", "bilibili")
+                    title = audio_data.get("title", "未知标题")
+                    
+                    if video_url and platform:
+                        try:
+                            # 重建任务数据（使用默认配置，可以后续调整）
+                            from app.enmus.note_enums import DownloadQuality
+                            
+                            task_data = {
+                                'video_url': video_url,
+                                'platform': platform,
+                                'quality': DownloadQuality.AUDIO,
+                                'model_name': 'gpt-4o-mini',  # 默认模型
+                                'provider_id': 'openai',      # 默认提供者
+                                'screenshot': False,
+                                'link': False,
+                                'format': [],
+                                'style': '简洁',
+                                'extras': None,
+                                'video_understanding': False,
+                                'video_interval': 0,
+                                'grid_size': [],
+                                'title': title
+                            }
+                            
+                            logger.info(f"✅ 从音频文件获取任务数据成功: {title} ({video_url})")
+                        except Exception as data_error:
+                            logger.error(f"❌ 构建任务数据失败: {task_id}, {data_error}")
+                            # 如果构建任务数据失败，task_data保持为None
+                except Exception as e:
+                    logger.error(f"❌ 读取音频文件失败: {task_id}, {e}")
         
         # 如果没有获取到任务数据，返回错误
         if not task_data:
@@ -1562,24 +1732,28 @@ def force_restart_task(task_id: str):
                 logger.info(f"🗑️ 已从任务队列移除旧任务: {task_id}")
         
         # 4. 创建全新的任务
-        new_task_id = task_queue.add_task(
-            task_type=TaskType.SINGLE_VIDEO, 
-            data=task_data,
-            task_id=task_id  # 使用原有的task_id
-        )
-        
-        logger.info(f"✅ 强制重新开始任务成功: {task_id}")
-        logger.info(f"📋 任务详情: {task_data.get('title', '未知标题')}")
-        logger.info(f"🧹 清理了 {len(cleaned_files)} 个文件: {', '.join(cleaned_files)}")
-        
-        return R.success({
-            "message": f"任务已强制重新开始，标题: {task_data.get('title', '未知标题')}",
-            "task_id": task_id,
-            "video_url": task_data.get('video_url', ''),
-            "title": task_data.get('title', '未知标题'),
-            "cleaned_files": cleaned_files,
-            "restart_time": time.time()
-        })
+        try:
+            new_task_id = task_queue.add_task(
+                task_type=TaskType.SINGLE_VIDEO, 
+                data=task_data,
+                task_id=task_id  # 使用原有的task_id
+            )
+            
+            logger.info(f"✅ 强制重新开始任务成功: {task_id}")
+            logger.info(f"📋 任务详情: {task_data.get('title', '未知标题')}")
+            logger.info(f"🧹 清理了 {len(cleaned_files)} 个文件: {', '.join(cleaned_files)}")
+            
+            return R.success({
+                "message": f"任务已强制重新开始，标题: {task_data.get('title', '未知标题')}",
+                "task_id": task_id,
+                "video_url": task_data.get('video_url', ''),
+                "title": task_data.get('title', '未知标题'),
+                "cleaned_files": cleaned_files,
+                "restart_time": time.time()
+            })
+        except Exception as task_error:
+            logger.error(f"❌ 强制重新开始任务时创建任务失败: {task_id}, {task_error}")
+            return R.error(f"强制重新开始任务失败: 文件已清理但任务创建失败 - {str(task_error)}")
         
     except Exception as e:
         logger.error(f"❌ 强制重新开始任务失败: {task_id}, {e}")

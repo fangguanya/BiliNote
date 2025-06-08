@@ -96,7 +96,7 @@ def split_segments_with_images_by_tokens(
     max_tokens: int = 80000
 ) -> List[Tuple[List[TranscriptSegment], List[str]]]:
     """
-    根据token限制将转录片段和图片分割成多个组，确保图片不被拆分
+    根据token限制将转录片段和图片分割成多个组，图片可以分散到不同分块
     
     Args:
         segments: 转录片段列表
@@ -118,100 +118,150 @@ def split_segments_with_images_by_tokens(
     template_reserve = 10000
     actual_max_tokens = max_tokens - template_reserve
     
-    # 计算图片总token数
+    # 计算图片token信息
     image_urls = image_urls or []
-    total_image_tokens = estimate_image_tokens_from_base64(image_urls)
+    image_tokens_list = []  # 每张图片的token数
+    total_image_tokens = 0
     
-    logger.info(f"📊 开始混合内容分割: 转录片段={len(segments)}, 图片={len(image_urls)}, 图片tokens={total_image_tokens}")
+    for image_url in image_urls:
+        tokens = estimate_image_tokens_from_base64([image_url])
+        image_tokens_list.append(tokens)
+        total_image_tokens += tokens
+    
+    logger.info(f"📊 开始混合内容分割: 转录片段={len(segments)}, 图片={len(image_urls)}, 图片总tokens={total_image_tokens}")
     logger.info(f"📊 最大token数: {actual_max_tokens} (预留: {template_reserve})")
     
-    # 策略1: 如果图片token数量很大，只在第一个分块中包含图片
-    if total_image_tokens > actual_max_tokens * 0.5:  # 图片占用超过50%
-        logger.warning(f"⚠️ 图片token占用过大({total_image_tokens})，只在第一个分块包含图片")
+    # 如果没有图片，使用原有的分块逻辑
+    if not image_urls:
+        segment_chunks = split_segments_by_tokens(segments, max_tokens)
+        return [(chunk, []) for chunk in segment_chunks]
+    
+    # 创建图片队列，用于分配
+    available_images = list(zip(image_urls, image_tokens_list))
+    image_queue_index = 0
+    
+    for i, segment in enumerate(segments):
+        segment_text = f"{format_time_from_seconds(segment.start)} - {segment.text.strip()}"
+        segment_tokens = estimate_tokens(segment_text)
         
-        # 第一个分块：包含图片和部分转录
-        first_chunk_max_tokens = actual_max_tokens - total_image_tokens
-        first_chunk = []
-        first_chunk_tokens = 0
-        
-        for segment in segments:
-            segment_text = f"{format_time_from_seconds(segment.start)} - {segment.text.strip()}"
-            segment_tokens = estimate_tokens(segment_text)
+        # 尝试从图片队列中添加图片到当前分块
+        while image_queue_index < len(available_images):
+            next_image_url, next_image_tokens = available_images[image_queue_index]
             
-            if first_chunk_tokens + segment_tokens <= first_chunk_max_tokens:
-                first_chunk.append(segment)
-                first_chunk_tokens += segment_tokens
+            # 检查当前分块是否能容纳这张图片
+            potential_tokens = current_tokens + segment_tokens + next_image_tokens
+            current_image_tokens = sum(tokens for _, tokens in current_images)
+            potential_total = current_tokens + segment_tokens + current_image_tokens + next_image_tokens
+            
+            if potential_total <= actual_max_tokens:
+                # 可以添加这张图片
+                current_images.append((next_image_url, next_image_tokens))
+                image_queue_index += 1
+                logger.debug(f"📸 添加图片到分块 {len(chunks)+1}: {next_image_tokens} tokens")
             else:
+                # 当前分块无法容纳更多图片，停止添加
                 break
         
-        if first_chunk:
-            chunks.append((first_chunk, image_urls))
-            logger.info(f"📦 第一分块(含图片): {len(first_chunk)}个片段, {first_chunk_tokens + total_image_tokens} tokens")
+        # 检查当前片段是否可以添加到当前分块
+        current_image_tokens = sum(tokens for _, tokens in current_images)
+        total_current_tokens = current_tokens + segment_tokens + current_image_tokens
+        
+        if total_current_tokens > actual_max_tokens and current_chunk:
+            # 当前分块已满，保存并开始新分块
+            final_images = [img_url for img_url, _ in current_images]
+            chunks.append((current_chunk, final_images))
             
-            # 处理剩余片段（不包含图片）
-            remaining_segments = segments[len(first_chunk):]
-            if remaining_segments:
-                remaining_chunks = split_segments_by_tokens(remaining_segments, max_tokens)
-                for i, chunk_segments in enumerate(remaining_chunks):
-                    chunks.append((chunk_segments, []))  # 后续分块不包含图片
-                    chunk_tokens = sum(estimate_tokens(f"{format_time_from_seconds(seg.start)} - {seg.text.strip()}") 
-                                     for seg in chunk_segments)
-                    logger.info(f"📦 后续分块{i+2}: {len(chunk_segments)}个片段, {chunk_tokens} tokens")
+            total_tokens = current_tokens + current_image_tokens
+            logger.info(f"📦 完成分块 {len(chunks)}: {len(current_chunk)}个片段, {len(final_images)}张图片, {current_tokens}文本+{current_image_tokens}图片={total_tokens} tokens")
+            
+            # 开始新分块
+            current_chunk = [segment]
+            current_images = []
+            current_tokens = segment_tokens
         else:
-            # 如果连一个片段都放不下，强制放入第一个片段
-            chunks.append(([segments[0]], image_urls))
-            remaining_chunks = split_segments_by_tokens(segments[1:], max_tokens)
-            for chunk_segments in remaining_chunks:
-                chunks.append((chunk_segments, []))
-                
-        return chunks
+            # 添加片段到当前分块
+            current_chunk.append(segment)
+            current_tokens += segment_tokens
     
-    # 策略2: 图片token适中，可以在多个分块中分配
-    elif total_image_tokens <= actual_max_tokens * 0.3:  # 图片占用不超过30%
-        logger.info(f"✅ 图片token适中({total_image_tokens})，分配到各个分块")
+    # 如果还有剩余的图片未分配，尝试分配到最后一个分块或创建新分块
+    while image_queue_index < len(available_images):
+        remaining_images = available_images[image_queue_index:]
+        remaining_image_tokens = sum(tokens for _, tokens in remaining_images)
         
-        # 计算可以分配图片的分块数量
-        images_per_chunk = max(1, len(image_urls) // 3)  # 平均分配，但每块至少1张
-        image_chunks = [image_urls[i:i + images_per_chunk] for i in range(0, len(image_urls), images_per_chunk)]
+        current_image_tokens = sum(tokens for _, tokens in current_images)
+        total_current_tokens = current_tokens + current_image_tokens + remaining_image_tokens
         
-        current_image_idx = 0
-        
-        for i, segment in enumerate(segments):
-            segment_text = f"{format_time_from_seconds(segment.start)} - {segment.text.strip()}"
-            segment_tokens = estimate_tokens(segment_text)
+        if total_current_tokens <= actual_max_tokens:
+            # 所有剩余图片都可以加入当前分块
+            current_images.extend(remaining_images)
+            image_queue_index = len(available_images)
+            logger.info(f"📸 将剩余 {len(remaining_images)} 张图片添加到最后分块")
+        else:
+            # 需要为剩余图片创建新分块，尝试逐张添加
+            while image_queue_index < len(available_images):
+                next_image_url, next_image_tokens = available_images[image_queue_index]
+                current_image_tokens = sum(tokens for _, tokens in current_images)
+                
+                if current_tokens + current_image_tokens + next_image_tokens <= actual_max_tokens:
+                    current_images.append((next_image_url, next_image_tokens))
+                    image_queue_index += 1
+                else:
+                    # 当前分块无法容纳，结束当前分块，为剩余图片创建新分块
+                    break
             
-            # 计算当前分块如果加上图片的token数
-            current_image_chunk = image_chunks[current_image_idx] if current_image_idx < len(image_chunks) else []
-            current_image_tokens = estimate_image_tokens_from_base64(current_image_chunk)
-            
-            # 检查是否超出限制
-            if current_tokens + segment_tokens + current_image_tokens > actual_max_tokens and current_chunk:
+            # 如果还有未分配的图片，为它们创建新的分块
+            if image_queue_index < len(available_images):
                 # 保存当前分块
-                chunks.append((current_chunk, current_images))
-                logger.info(f"📦 完成分块 {len(chunks)}: {len(current_chunk)}个片段, {current_tokens}文本+{estimate_image_tokens_from_base64(current_images)}图片 tokens")
+                if current_chunk:
+                    final_images = [img_url for img_url, _ in current_images]
+                    chunks.append((current_chunk, final_images))
+                    
+                    current_image_tokens = sum(tokens for _, tokens in current_images)
+                    total_tokens = current_tokens + current_image_tokens
+                    logger.info(f"📦 完成分块 {len(chunks)}: {len(current_chunk)}个片段, {len(final_images)}张图片, {current_tokens}文本+{current_image_tokens}图片={total_tokens} tokens")
                 
-                # 开始新分块
-                current_chunk = [segment]
-                current_tokens = segment_tokens
-                current_image_idx = min(current_image_idx + 1, len(image_chunks) - 1)
-                current_images = image_chunks[current_image_idx] if current_image_idx < len(image_chunks) else []
-            else:
-                current_chunk.append(segment)
-                current_tokens += segment_tokens
-                if not current_images and current_image_idx < len(image_chunks):
-                    current_images = image_chunks[current_image_idx]
-        
-        # 添加最后一个组
-        if current_chunk:
-            chunks.append((current_chunk, current_images))
-            logger.info(f"📦 完成分块 {len(chunks)}: {len(current_chunk)}个片段, {current_tokens}文本+{estimate_image_tokens_from_base64(current_images)}图片 tokens")
-        
-        return chunks
+                # 为剩余图片创建新分块（只包含图片，不包含转录）
+                remaining_images = available_images[image_queue_index:]
+                remaining_chunk_images = []
+                remaining_tokens = 0
+                
+                for img_url, img_tokens in remaining_images:
+                    if remaining_tokens + img_tokens <= actual_max_tokens:
+                        remaining_chunk_images.append(img_url)
+                        remaining_tokens += img_tokens
+                    else:
+                        # 如果还有图片装不下，需要进一步分块
+                        if remaining_chunk_images:
+                            chunks.append(([], remaining_chunk_images))
+                            logger.info(f"📦 完成图片分块 {len(chunks)}: 0个片段, {len(remaining_chunk_images)}张图片, {remaining_tokens} tokens")
+                        
+                        remaining_chunk_images = [img_url]
+                        remaining_tokens = img_tokens
+                
+                # 添加最后的图片分块
+                if remaining_chunk_images:
+                    chunks.append(([], remaining_chunk_images))
+                    logger.info(f"📦 完成最后图片分块 {len(chunks)}: 0个片段, {len(remaining_chunk_images)}张图片, {remaining_tokens} tokens")
+                
+                image_queue_index = len(available_images)
+                current_chunk = []
+                current_images = []
+                current_tokens = 0
     
-    # 策略3: 图片token较大但可以处理，只在第一个分块包含
-    else:
-        logger.info(f"📊 图片token较大({total_image_tokens})，只在第一个分块包含")
-        return split_segments_with_images_by_tokens(segments, image_urls, max_tokens)
+    # 添加最后一个分块（如果有内容）
+    if current_chunk or current_images:
+        final_images = [img_url for img_url, _ in current_images]
+        chunks.append((current_chunk, final_images))
+        
+        current_image_tokens = sum(tokens for _, tokens in current_images)
+        total_tokens = current_tokens + current_image_tokens
+        logger.info(f"📦 完成最后分块 {len(chunks)}: {len(current_chunk)}个片段, {len(final_images)}张图片, {current_tokens}文本+{current_image_tokens}图片={total_tokens} tokens")
+    
+    logger.info(f"✅ 分块完成，共 {len(chunks)} 个分块，图片分配情况:")
+    for i, (chunk_segments, chunk_images) in enumerate(chunks):
+        logger.info(f"   分块{i+1}: {len(chunk_segments)}个片段, {len(chunk_images)}张图片")
+    
+    return chunks
 
 
 def split_segments_by_tokens(segments: List[TranscriptSegment], max_tokens: int = 80000) -> List[List[TranscriptSegment]]:
