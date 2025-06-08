@@ -20,24 +20,32 @@ def fix_markdown(content: str) -> str:
 
 def estimate_tokens(text: str) -> int:
     """
-    估算文本的token数量
-    使用简单的启发式方法：中文字符按1.5个token计算，英文单词按1个token计算
-    这是一个粗略估算，实际token数可能有差异
+    更准确地估算文本的token数量
+    基于实际测试调整的估算公式，更接近真实token数量
     """
     if not text:
         return 0
     
+    # 计算总字符数
+    total_chars = len(text)
+    
     # 计算中文字符数量
     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
     
-    # 计算英文单词数量
+    # 计算英文单词数量  
     english_words = len(re.findall(r'\b[a-zA-Z]+\b', text))
     
-    # 计算数字和标点符号
-    other_chars = len(re.findall(r'[0-9\W]', text))
+    # 计算数字、符号、标点等
+    other_chars = total_chars - chinese_chars - sum(len(word) for word in re.findall(r'\b[a-zA-Z]+\b', text))
     
-    # 粗略估算：中文字符1.5token，英文单词1token，其他字符0.5token
-    estimated_tokens = int(chinese_chars * 1.5 + english_words * 1 + other_chars * 0.5)
+    # 更保守的估算：
+    # - 中文字符按2个token计算（之前1.5偏小）
+    # - 英文单词按1.3个token计算（考虑子词分割）
+    # - 其他字符按0.8个token计算
+    # - 再加20%的安全余量
+    estimated_tokens = int((chinese_chars * 2.0 + english_words * 1.3 + other_chars * 0.8) * 1.2)
+    
+    logger.info(f"📊 Token估算详情: 总字符={total_chars}, 中文={chinese_chars}, 英文单词={english_words}, 其他={other_chars}, 估算tokens={estimated_tokens}")
     
     return estimated_tokens
 
@@ -61,10 +69,10 @@ def split_segments_by_tokens(segments: List[TranscriptSegment], max_tokens: int 
     current_tokens = 0
     
     # 为prompt模板预留token空间
-    template_reserve = 5000  # 为prompt模板、标题、标签等预留的token数
+    template_reserve = 10000  # 增加预留空间，为prompt模板、标题、标签等预留更多token
     actual_max_tokens = max_tokens - template_reserve
     
-    logger.info(f"📊 开始分割转录片段，最大token数: {actual_max_tokens}")
+    logger.info(f"📊 开始分割转录片段，最大token数: {actual_max_tokens} (预留: {template_reserve})")
     
     for i, segment in enumerate(segments):
         segment_text = f"{format_time_from_seconds(segment.start)} - {segment.text.strip()}"

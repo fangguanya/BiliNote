@@ -90,7 +90,7 @@ class DeepSeekGPT(GPT):
         logger.info(f"📊 模型 {self.model} 的token限制: {max_tokens}")
         
         # 如果内容在限制范围内，直接处理
-        if estimated_tokens <= max_tokens - 5000:  # 预留5000 token给prompt模板
+        if estimated_tokens <= max_tokens - 10000:  # 增加预留token空间到10000
             logger.info("📝 内容未超出限制，直接处理")
             messages = self.create_messages(source.segment, source.title, source.tags)
             response = self.client.chat.completions.create(

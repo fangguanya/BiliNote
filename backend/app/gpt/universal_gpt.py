@@ -110,11 +110,23 @@ class UniversalGPT(GPT):
             max_tokens = 14000   # GPT-3.5限制更低
         elif 'claude' in self.model.lower():
             max_tokens = 180000  # Claude有很高的限制
+        elif 'qwen' in self.model.lower():
+            # Qwen模型的实际限制根据具体版本调整
+            if 'qwen2.5-vl-72b' in self.model.lower():
+                max_tokens = 80000   # 实际测试发现96000是最大长度，但预留更多空间
+            # elif 'qwen2.5' in self.model.lower():
+            #     max_tokens = 120000  # 其他qwen2.5版本
+            else:
+                max_tokens = 80000   # 保守设置
+        elif 'deepseek' in self.model.lower():
+            max_tokens = 120000  # DeepSeek限制
+        elif 'yi-' in self.model.lower() or 'yi_' in self.model.lower():
+            max_tokens = 120000  # Yi系列模型
         
         logger.info(f"📊 模型 {self.model} 的token限制: {max_tokens}")
         
         # 如果内容在限制范围内，直接处理
-        if estimated_tokens <= max_tokens - 5000:  # 预留5000 token给prompt模板
+        if estimated_tokens <= max_tokens - 10000:  # 增加预留token空间到10000
             logger.info("📝 内容未超出限制，直接处理")
             messages = self.create_messages(
                 source.segment,

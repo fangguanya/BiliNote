@@ -360,7 +360,7 @@ class NoteGenerator:
                     f.write(markdown)
                 logger.info(f"GPT总结并缓存成功，task_id={task_id}")
             except Exception as e:
-                logger.error(f"Error 总结内容失败，task_id={task_id}，错误信息：{e}")
+                logger.error(f"Error 总结内容失败，task_id={task_id}，错误信息：{e}, message={transcript.segments}")
                 self.update_task_status(task_id, TaskStatus.FAILED, message=f"总结内容失败：{e}")
                 raise HTTPException(
                     status_code=500,

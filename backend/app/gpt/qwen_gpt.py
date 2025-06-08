@@ -89,12 +89,18 @@ class QwenGPT(GPT):
         # 设置token限制（根据不同模型调整）
         max_tokens = 80000  # 默认限制
         if 'qwen' in self.model.lower():
-            max_tokens = 120000  # Qwen有较高的限制
+            # Qwen模型的实际限制根据具体版本调整
+            if 'qwen2.5-vl-72b' in self.model.lower():
+                max_tokens = 80000   # 实际测试发现96000是最大长度，但预留更多空间
+            # elif 'qwen2.5' in self.model.lower():
+            #     max_tokens = 120000  # 其他qwen2.5版本
+            else:
+                max_tokens = 80000   # 保守设置
         
         logger.info(f"📊 模型 {self.model} 的token限制: {max_tokens}")
         
         # 如果内容在限制范围内，直接处理
-        if estimated_tokens <= max_tokens - 5000:  # 预留5000 token给prompt模板
+        if estimated_tokens <= max_tokens - 10000:  # 增加预留token空间到10000
             logger.info("📝 内容未超出限制，直接处理")
             messages = self.create_messages(source.segment, source.title, source.tags)
             response = self.client.chat(
