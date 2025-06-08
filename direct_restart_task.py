@@ -59,7 +59,7 @@ def force_restart_task_direct(task_id: str):
                     task_data = {
                         'video_url': video_url,
                         'platform': platform,
-                        'quality': 'audio',  # DownloadQuality.AUDIO
+                        'quality': 'fast',  # DownloadQuality.AUDIO
                         'model_name': 'gpt-4o-mini',  # 默认模型
                         'provider_id': 'openai',      # 默认提供者
                         'screenshot': False,

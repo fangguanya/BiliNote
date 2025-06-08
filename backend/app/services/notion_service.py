@@ -179,7 +179,23 @@ class NotionService:
                     }
             
             # 准备页面内容
-            children = self._markdown_to_notion_blocks(note_result.markdown)
+            try:
+                children = self._markdown_to_notion_blocks(note_result.markdown)
+                logger.info(f"📄 成功解析Markdown，生成 {len(children)} 个内容块")
+            except Exception as markdown_error:
+                logger.error(f"❌ Markdown解析失败: {markdown_error}")
+                # 如果Markdown解析失败，创建一个简单的文本块
+                children = [{
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {
+                                "content": f"Markdown解析失败，原始内容:\n\n{note_result.markdown[:2000]}{'...' if len(note_result.markdown) > 2000 else ''}"
+                            }
+                        }]
+                    }
+                }]
             
             # 创建页面
             response = self.client.pages.create(
@@ -234,7 +250,23 @@ class NotionService:
                 parent = {"type": "workspace", "workspace": True}
             
             # 准备页面内容
-            children = self._markdown_to_notion_blocks(note_result.markdown)
+            try:
+                children = self._markdown_to_notion_blocks(note_result.markdown)
+                logger.info(f"📄 成功解析Markdown，生成 {len(children)} 个内容块")
+            except Exception as markdown_error:
+                logger.error(f"❌ Markdown解析失败: {markdown_error}")
+                # 如果Markdown解析失败，创建一个简单的文本块
+                children = [{
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {
+                                "content": f"Markdown解析失败，原始内容:\n\n{note_result.markdown[:2000]}{'...' if len(note_result.markdown) > 2000 else ''}"
+                            }
+                        }]
+                    }
+                }]
             
             # 创建页面
             response = self.client.pages.create(
@@ -512,10 +544,22 @@ class NotionService:
         Returns:
             List[Dict]: Notion块列表
         """
+        # 限制markdown长度，防止处理过大的内容
+        max_markdown_length = 100000  # 100KB
+        if len(markdown) > max_markdown_length:
+            logger.warning(f"⚠️ Markdown内容过长 ({len(markdown)} 字符)，截断到 {max_markdown_length} 字符")
+            markdown = markdown[:max_markdown_length] + "\n\n[内容已截断...]"
+        
         blocks = []
         lines = markdown.split('\n')
         current_paragraph = []
         i = 0
+        
+        # 限制总行数，防止处理过多行
+        max_lines = 5000
+        if len(lines) > max_lines:
+            logger.warning(f"⚠️ Markdown行数过多 ({len(lines)} 行)，截断到 {max_lines} 行")
+            lines = lines[:max_lines] + ["", "[内容已截断...]"]
         
         while i < len(lines):
             line = lines[i].strip()
@@ -597,16 +641,27 @@ class NotionService:
                         logger.info(f"🖼️ 处理内联图片: {image_url}, alt_text: '{alt_text}'")
                         
                         # 上传图片到Notion并创建图片块
-                        file_upload_id = self.upload_file_to_notion(image_url)
-                        if file_upload_id:
-                            logger.info(f"✅ 图片上传成功，创建file_upload图片块")
-                            blocks.append(self._create_image_block_with_upload(file_upload_id, alt_text))
-                        else:
-                            # 如果上传失败，创建一个带有错误信息的段落
-                            logger.warning(f"⚠️ 图片上传失败，将作为文本段落处理: {image_url}")
-                            error_text = f"[图片上传失败: {os.path.basename(image_url)}]"
-                            if alt_text:
-                                error_text = f"[图片上传失败: {alt_text} - {os.path.basename(image_url)}]"
+                        try:
+                            file_upload_id = self.upload_file_to_notion(image_url)
+                            if file_upload_id:
+                                logger.info(f"✅ 图片上传成功，创建file_upload图片块")
+                                try:
+                                    image_block = self._create_image_block_with_upload(file_upload_id, alt_text)
+                                    blocks.append(image_block)
+                                except Exception as block_error:
+                                    logger.error(f"❌ 创建图片块失败: {block_error}")
+                                    error_text = f"[图片块创建失败: {alt_text or os.path.basename(image_url)}]"
+                                    blocks.append(self._create_paragraph_block(error_text))
+                            else:
+                                # 如果上传失败，创建一个带有错误信息的段落
+                                logger.warning(f"⚠️ 图片上传失败，将作为文本段落处理: {image_url}")
+                                error_text = f"[图片上传失败: {os.path.basename(image_url)}]"
+                                if alt_text:
+                                    error_text = f"[图片上传失败: {alt_text} - {os.path.basename(image_url)}]"
+                                blocks.append(self._create_paragraph_block(error_text))
+                        except Exception as image_error:
+                            logger.error(f"❌ 图片处理完全失败: {image_error}")
+                            error_text = f"[图片处理失败: {alt_text or os.path.basename(image_url)}]"
                             blocks.append(self._create_paragraph_block(error_text))
                 i += 1
                 continue
@@ -741,8 +796,18 @@ class NotionService:
             }
         }
     
-    def _parse_rich_text(self, text: str) -> List[Dict[str, Any]]:
+    def _parse_rich_text(self, text: str, depth: int = 0) -> List[Dict[str, Any]]:
         """解析文本中的链接、格式等，返回rich_text数组"""
+        # 防止无限递归，限制递归深度
+        if depth > 10:
+            logger.warning(f"⚠️ 文本解析递归深度超限 (depth={depth})，返回原文本: {text[:50]}...")
+            return [{
+                "type": "text",
+                "text": {
+                    "content": text
+                }
+            }]
+        
         rich_text = []
         
         # 定义所有格式的正则表达式（按优先级排序）
@@ -781,7 +846,7 @@ class NotionService:
             if match.start() > last_end:
                 plain_text = text[last_end:match.start()]
                 if plain_text:
-                    rich_text.extend(self._parse_nested_formats(plain_text))
+                    rich_text.extend(self._parse_nested_formats(plain_text, depth + 1))
             
             # 处理匹配的格式
             match_type = match.lastgroup
@@ -900,7 +965,7 @@ class NotionService:
         if last_end < len(text):
             remaining_text = text[last_end:]
             if remaining_text:
-                rich_text.extend(self._parse_nested_formats(remaining_text))
+                rich_text.extend(self._parse_nested_formats(remaining_text, depth + 1))
         
         # 如果没有任何格式，返回简单文本
         if not rich_text:
@@ -913,8 +978,18 @@ class NotionService:
         
         return rich_text
     
-    def _parse_nested_formats(self, text: str) -> List[Dict[str, Any]]:
+    def _parse_nested_formats(self, text: str, depth: int = 0) -> List[Dict[str, Any]]:
         """处理嵌套格式（如同时有加粗和斜体）"""
+        # 防止无限递归，限制递归深度
+        if depth > 50:
+            logger.warning(f"⚠️ 嵌套格式解析递归深度超限 (depth={depth})，返回原文本: {text[:50]}...")
+            return [{
+                "type": "text",
+                "text": {
+                    "content": text
+                }
+            }]
+        
         # 简化版本：如果文本中没有特殊格式标记，直接返回普通文本
         # 这里可以进一步扩展来处理更复杂的嵌套格式
         if not any(marker in text for marker in ['**', '__', '*', '_', '`', '$$']):
@@ -926,7 +1001,7 @@ class NotionService:
             }]
         
         # 如果有格式标记，递归调用主解析函数
-        return self._parse_rich_text(text)
+        return self._parse_rich_text(text, depth + 1)
     
     def _create_heading_1_block(self, text: str) -> Dict[str, Any]:
         """创建一级标题块"""

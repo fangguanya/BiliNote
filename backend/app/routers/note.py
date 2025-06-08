@@ -1,6 +1,7 @@
 # app/routers/note.py
 import json
 import os
+import traceback
 import uuid
 import time
 import glob
@@ -812,7 +813,7 @@ def rebuild_task_from_files(task_id: str) -> bool:
                         task_data = {
                             'video_url': video_url,
                             'platform': platform,
-                            'quality': DownloadQuality.AUDIO,
+                            'quality': DownloadQuality.fast,
                             'model_name': 'gpt-4o-mini',
                             'provider_id': 'openai',
                             'screenshot': False,
@@ -865,7 +866,7 @@ def rebuild_task_from_files(task_id: str) -> bool:
                             task_data = {
                                 'video_url': video_url,
                                 'platform': platform,
-                                'quality': DownloadQuality.AUDIO,
+                                'quality': DownloadQuality.fast,
                                 'model_name': 'gpt-4o-mini',
                                 'provider_id': 'openai',
                                 'screenshot': False,
@@ -1087,7 +1088,7 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
                 task_data = {
                     'video_url': original_url,
                     'platform': original_platform,
-                    'quality': DownloadQuality.AUDIO,
+                    'quality': DownloadQuality.fast,
                     'model_name': 'gpt-4o-mini',
                     'provider_id': 'openai',
                     'screenshot': False,
@@ -1121,7 +1122,7 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
                             "video_url": original_url,
                             "platform": original_platform,
                             "title": original_title,
-                            "quality": task_data.get('quality', DownloadQuality.AUDIO),
+                            "quality": task_data.get('quality', DownloadQuality.fast),
                             "model_name": task_data.get('model_name', 'gpt-4o-mini'),
                             "provider_id": task_data.get('provider_id', 'openai'),
                             "screenshot": task_data.get('screenshot', False),
@@ -1148,7 +1149,7 @@ def clear_and_reset_task(task_id: str, error_data: dict = None) -> bool:
                 return True
                 
             except Exception as task_create_error:
-                logger.error(f"❌ 创建任务失败: {task_id}, {task_create_error}")
+                logger.error(f"❌ 创建任务神奇的失败: {task_id}, {task_create_error}, {traceback.format_exc()}")
                 logger.warning(f"⚠️ 任务创建失败但文件已清空，继续处理: {task_id}")
                 # 任务创建失败，但文件清空成功，也认为是部分成功
                 return len(cleaned_files) > 0
@@ -1353,7 +1354,7 @@ def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
                         task_data = {
                             'video_url': video_url,
                             'platform': platform,
-                            'quality': original_request_data.get('quality', DownloadQuality.AUDIO),
+                            'quality': original_request_data.get('quality', DownloadQuality.fast),
                             'model_name': request.model_name if request and request.model_name else original_request_data.get('model_name', 'gpt-4o-mini'),
                             'provider_id': request.provider_id if request and request.provider_id else original_request_data.get('provider_id', 'openai'),
                             'screenshot': original_request_data.get('screenshot', False),
@@ -1418,7 +1419,7 @@ def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
                         task_data = {
                             'video_url': video_url,
                             'platform': platform,
-                            'quality': DownloadQuality.AUDIO,
+                            'quality': DownloadQuality.fast,
                             'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
                             'provider_id': request.provider_id if request and request.provider_id else 'openai',
                             'screenshot': False,
@@ -1495,7 +1496,7 @@ def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
                             task_data = {
                                 'video_url': video_url,
                                 'platform': platform,
-                                'quality': DownloadQuality.AUDIO,
+                                'quality': DownloadQuality.fast,
                                 'model_name': request.model_name if request and request.model_name else 'gpt-4o-mini',
                                 'provider_id': request.provider_id if request and request.provider_id else 'openai',
                                 'screenshot': False,
@@ -1617,7 +1618,7 @@ def force_restart_task(task_id: str):
                         task_data = {
                             'video_url': video_url,
                             'platform': platform,
-                            'quality': original_request.get('quality', DownloadQuality.AUDIO),
+                            'quality': original_request.get('quality', DownloadQuality.fast),
                             'model_name': original_request.get('model_name', 'gpt-4o-mini'),
                             'provider_id': original_request.get('provider_id', 'openai'),
                             'screenshot': original_request.get('screenshot', False),
@@ -1673,7 +1674,7 @@ def force_restart_task(task_id: str):
                             task_data = {
                                 'video_url': video_url,
                                 'platform': platform,
-                                'quality': DownloadQuality.AUDIO,
+                                'quality': DownloadQuality.fast,
                                 'model_name': 'gpt-4o-mini',  # 默认模型
                                 'provider_id': 'openai',      # 默认提供者
                                 'screenshot': False,
