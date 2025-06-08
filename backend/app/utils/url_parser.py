@@ -202,12 +202,11 @@ def is_collection_url(url: str, platform: str) -> bool:
                 logger.info(f"✅ 检测到B站{pattern_names[i]}链接: {pattern}")
                 return True
         
-        # 检查是否为多分P视频（单独处理）
+        # 检查是否为多分P视频或属于合集的单视频
         if re.search(r"bilibili\.com/video/BV", url):
-            # 这里需要进一步API调用来确认是否为多分P
-            logger.info("🔍 检测到B站视频，需要进一步检查是否为多分P")
-            # 注：多分P检测将在 is_video_part_of_collection 函数中处理
-            return False
+            logger.info("🔍 检测到B站视频，检查是否属于合集")
+            # 调用详细的合集检测函数
+            return is_video_part_of_collection(url)
         
         logger.info("❌ 不是B站合集链接")
         return False
@@ -266,9 +265,9 @@ def extract_collection_videos(url: str, platform: str, max_videos: int = 50) -> 
     logger.info(f"🎬 开始提取合集视频: {url} (平台: {platform}, 最大数量: {max_videos})")
     
     if platform == "bilibili":
-        return extract_bilibili_collection_videos(url, max_videos)
+        return _extract_bilibili_collection_videos(url, max_videos)
     elif platform == "douyin":
-        return extract_douyin_collection_videos(url, max_videos)
+        return _extract_douyin_collection_videos(url, max_videos)
     elif platform == "baidu_pan":
         return extract_baidu_pan_collection_videos(url, max_videos)
     else:
@@ -404,41 +403,8 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                 video_data = data['data']
                 video_title = video_data.get('title', '未知标题')
                 logger.info(f"📊 获取到视频信息: {video_title}")
-                
-                # 方法1: 优先处理UGC合集
-                if 'ugc_season' in video_data and video_data['ugc_season']:
-                    season_info = video_data['ugc_season']
-                    season_id = season_info.get('id')
-                    season_title = season_info.get('title', '未知合集')
-                    
-                    logger.info(f"✅ 发现UGC合集: {season_title} (ID: {season_id})")
-                    
-                    # 获取合集中的所有视频
-                    if 'owner' in video_data:
-                        owner_mid = video_data['owner'].get('mid', 0)
-                        collection_api_url = f"https://api.bilibili.com/x/polymer/space/seasons_archives_list?mid={owner_mid}&season_id={season_id}&sort_reverse=false&page_num=1&page_size={max_videos}"
-                        
-                        collection_response = requests.get(collection_api_url, headers=headers, timeout=10)
-                        
-                        if collection_response.status_code == 200:
-                            collection_data = collection_response.json()
-                            
-                            if collection_data.get('code') == 0 and 'data' in collection_data and 'archives' in collection_data['data']:
-                                archives = collection_data['data']['archives']
-                                logger.info(f"📹 UGC合集包含 {len(archives)} 个视频")
                                 
-                                for archive in archives:
-                                    if archive.get('bvid') and archive.get('title'):
-                                        video_url = f"https://www.bilibili.com/video/{archive['bvid']}"
-                                        # 对于UGC合集中的视频标题，进行适当清理
-                                        # 因为可能包含一些合集相关的装饰性文字
-                                        cleaned_archive_title = smart_title_clean(archive['title'], platform="bilibili", preserve_episode=False)
-                                        videos.append((video_url, cleaned_archive_title))
-                                
-                                logger.info(f"✅ 成功提取UGC合集 {len(videos)} 个视频")
-                                return videos
-                
-                # 方法1.5: 处理番剧/电影合集（season字段）
+                # 方法1: 处理番剧/电影合集（season字段）
                 if 'season' in video_data and video_data['season']:
                     season_info = video_data['season']
                     season_id = season_info.get('season_id')
@@ -543,6 +509,59 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                                     return videos
                 
                 
+                # 方法4: 处理UGC合集
+                if 'ugc_season' in video_data and video_data['ugc_season']:
+                    season_info = video_data['ugc_season']
+                    season_id = season_info.get('id')
+                    season_title = season_info.get('title', '未知合集')
+                    
+                    logger.info(f"✅ 发现UGC-Season合集: {season_title} (ID: {season_id})")
+                    
+                    # 获取合集中的所有视频
+                    if 'owner' in video_data:
+                        owner_mid = video_data['owner'].get('mid', 0)
+                        collection_api_url = f"https://api.bilibili.com/x/polymer/space/seasons_archives_list?mid={owner_mid}&season_id={season_id}&sort_reverse=false&page_num=1&page_size={max_videos}"
+                        
+                        collection_response = requests.get(collection_api_url, headers=headers, timeout=10)
+                        
+                        if collection_response.status_code == 200:
+                            collection_data = collection_response.json()
+                            
+                            if collection_data.get('code') == 0 and 'data' in collection_data and 'archives' in collection_data['data']:
+                                archives = collection_data['data']['archives']
+                                logger.info(f"📹 UGC合集包含 {len(archives)} 个视频")
+                                
+                                for archive in archives:
+                                    if archive.get('bvid') and archive.get('title'):
+                                        video_url = f"https://www.bilibili.com/video/{archive['bvid']}"
+                                        # 🧹 清理UGC合集标题
+                                        cleaned_archive_title = smart_title_clean(archive['title'], platform="bilibili", preserve_episode=False)
+                                        videos.append((video_url, cleaned_archive_title))
+                                
+                                logger.info(f"✅ 成功提取UGC合集 {len(videos)} 个视频")
+                                return videos
+                    
+                    # 处理正片和花絮等
+                    sections = season_info.get('sections', [])
+                    if not sections and 'main_section' in season_info:
+                        sections = [season_info['main_section']]
+                    
+                    for section in sections:
+                        episodes = section.get('episodes', [])
+                        logger.info(f"📹 番剧章节包含 {len(episodes)} 个剧集")
+                        
+                        for episode in episodes:
+                            if episode.get('bvid') and episode.get('title'):
+                                episode_url = f"https://www.bilibili.com/video/{episode['bvid']}"
+                                original_episode_title = f"{episode.get('title', '')}"
+                                # 🧹 清理番剧集数标题
+                                cleaned_episode_title = smart_title_clean(original_episode_title, platform="bilibili", preserve_episode=False)
+                                videos.append((episode_url, cleaned_episode_title.strip()))
+                        
+                    if videos:
+                        logger.info(f"✅ 成功提取番剧合集 {len(videos)} 个剧集")
+                        return videos
+                    
                 # 如果没有找到合集信息，至少返回当前视频
                 logger.info("📺 未找到合集信息，返回单视频")
                 videos.append((url, video_title))
