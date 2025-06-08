@@ -65,7 +65,7 @@ def estimate_image_tokens_from_base64(image_urls: list) -> int:
             base64_part = image_url.split(',', 1)[-1] if ',' in image_url else image_url
             
             # base64字符数量估算token（经验公式：base64字符数 / 3）
-            base64_tokens = len(base64_part) // 15
+            base64_tokens = len(base64_part) // 25
             total_tokens += base64_tokens
             
             logger.debug(f"📸 图片token估算: base64长度={len(base64_part)}, 估算tokens={base64_tokens}")
@@ -115,8 +115,7 @@ def split_segments_with_images_by_tokens(
     current_tokens = 0
     
     # 为prompt模板预留token空间
-    template_reserve = 10000
-    actual_max_tokens = max_tokens - template_reserve
+    actual_max_tokens = max_tokens
     
     # 计算图片token信息
     image_urls = image_urls or []
@@ -129,7 +128,7 @@ def split_segments_with_images_by_tokens(
         total_image_tokens += tokens
     
     logger.info(f"📊 开始混合内容分割: 转录片段={len(segments)}, 图片={len(image_urls)}, 图片总tokens={total_image_tokens}")
-    logger.info(f"📊 最大token数: {actual_max_tokens} (预留: {template_reserve})")
+    logger.info(f"📊 最大token数: {actual_max_tokens} ")
     
     # 如果没有图片，使用原有的分块逻辑
     if not image_urls:
@@ -283,10 +282,9 @@ def split_segments_by_tokens(segments: List[TranscriptSegment], max_tokens: int 
     current_tokens = 0
     
     # 为prompt模板预留token空间
-    template_reserve = 10000  # 增加预留空间，为prompt模板、标题、标签等预留更多token
-    actual_max_tokens = max_tokens - template_reserve
+    actual_max_tokens = max_tokens
     
-    logger.info(f"📊 开始分割转录片段，最大token数: {actual_max_tokens} (预留: {template_reserve})")
+    logger.info(f"📊 开始分割转录片段，最大token数: {actual_max_tokens}")
     
     for i, segment in enumerate(segments):
         segment_text = f"{format_time_from_seconds(segment.start)} - {segment.text.strip()}"

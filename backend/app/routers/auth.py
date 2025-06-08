@@ -402,7 +402,7 @@ async def generate_baidu_pan_qr():
             # 构建响应数据
             response_data = {
                 "session_id": session_id,
-                "expires_in": 180,  # 3分钟
+                "expires_in": 300,  # 5分钟，增加有效期
                 "message": "请使用百度APP扫描二维码登录"
             }
             
@@ -772,7 +772,9 @@ async def check_baidu_pan_login_status(session_id: str):
                     "message": "等待登录确认..."
                 })
             
-            # 获取登录信息 - 获取最终的cookie
+            # 获取登录信息 - 获取最终的cookie，立即处理避免过期
+            logger.info(f"⏰ 立即获取最终登录信息，当前时间: {int(time.time())}")
+            
             login_response = await client.get(
                 "https://passport.baidu.com/v3/login/main/qrbdusslogin",
                 params={
@@ -790,7 +792,8 @@ async def check_baidu_pan_login_status(session_id: str):
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Referer": "https://pan.baidu.com/"
                 },
-                follow_redirects=False  # 修复：httpx使用follow_redirects而不是allow_redirects
+                follow_redirects=False,  # 修复：httpx使用follow_redirects而不是allow_redirects
+                timeout=30  # 增加超时时间
             )
             
             logger.info(f"🔍 登录响应状态码: {login_response.status_code}")
@@ -825,6 +828,14 @@ async def check_baidu_pan_login_status(session_id: str):
             login_text = login_response.text
             logger.info(f"🔍 登录响应内容: {login_text[:300]}...")
             
+            # 检查是否有过期错误
+            if "310005" in login_text or "验证信息已过期" in login_text:
+                logger.warning(f"⚠️ 检测到验证信息过期错误，可能需要重新扫码")
+                return R.success({
+                    "status": "expired",
+                    "message": "登录验证已过期，请重新扫码"
+                })
+            
             # 构建cookie字符串
             cookie_string = "; ".join([f"{name}={value}" for name, value in cookies_dict.items()])
             
@@ -855,14 +866,28 @@ async def check_baidu_pan_login_status(session_id: str):
                 cookie_string = "; ".join([f"{name}={value}" for name, value in cookies_dict.items()])
                 
                 # 保存cookie
+                logger.info(f"💾 准备保存百度网盘cookie")
+                logger.debug(f"🔍 Cookie字符串长度: {len(cookie_string)}")
+                logger.debug(f"🔍 Cookie内容详情: {cookie_string}")
+                
                 cookie_manager.set("baidu_pan", cookie_string)
+                
+                # 验证保存是否成功
+                saved_cookie = cookie_manager.get("baidu_pan")
+                if saved_cookie:
+                    logger.info("✅ Cookie保存验证成功")
+                    logger.debug(f"🔍 已保存的cookie长度: {len(saved_cookie)}")
+                    logger.debug(f"🔍 保存的cookie匹配原始: {saved_cookie == cookie_string}")
+                else:
+                    logger.error("❌ Cookie保存验证失败")
                 
                 # 更新会话状态
                 session["status"] = "success"
                 session["cookie"] = cookie_string
                 
                 logger.info(f"✅ 百度网盘登录成功: {session_id}")
-                logger.info(f"🍪 保存的cookie: {cookie_string[:100]}...")
+                logger.info(f"🍪 保存的cookie预览: {cookie_string[:100]}...")
+                logger.info(f"📊 Cookie统计: 总长度={len(cookie_string)}, 包含{len(cookies_dict)}个字段")
                 
                 return R.success({
                     "status": "success",

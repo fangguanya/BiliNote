@@ -102,4 +102,87 @@ export const clearPlatformCookie = async (platform: string): Promise<boolean> =>
     toast.error('清除失败，请稍后重试')
     return false
   }
+}
+
+/**
+ * 生成百度网盘登录二维码
+ */
+export const generateBaiduPanQr = async (): Promise<QRCodeResponse | null> => {
+  try {
+    console.log('📱 生成百度网盘二维码')
+    const response = await request.post('/auth/generate_qr', { platform: 'baidu_pan' })
+    
+    if (response.data.code === 0) {
+      console.log('✅ 百度网盘二维码生成成功')
+      return response.data.data
+    } else {
+      console.error('❌ 百度网盘二维码生成失败:', response.data.message)
+      toast.error(response.data.message || '二维码生成失败')
+      return null
+    }
+  } catch (e) {
+    console.error('❌ 百度网盘二维码生成请求异常:', e)
+    toast.error('二维码生成失败，请稍后重试')
+    return null
+  }
+}
+
+/**
+ * 检查百度网盘登录状态
+ */
+export const checkBaiduPanLoginStatus = async (sessionId: string): Promise<LoginStatusResponse | null> => {
+  try {
+    const response = await request.get(`/auth/login_status/${sessionId}`)
+    
+    if (response.data.code === 0) {
+      return response.data.data
+    } else {
+      console.error('❌ 百度网盘登录状态检查失败:', response.data.message)
+      return null
+    }
+  } catch (e) {
+    console.error('❌ 百度网盘登录状态检查异常:', e)
+    return null
+  }
+}
+
+/**
+ * 获取百度网盘认证状态
+ */
+export const getBaiduPanAuthStatus = async () => {
+  try {
+    const response = await request.get('/baidu_pan/auth_status')
+    
+    if (response.data.code === 0) {
+      return response.data.data
+    } else {
+      console.error('❌ 获取百度网盘认证状态失败:', response.data.message)
+      return null
+    }
+  } catch (e) {
+    console.error('❌ 获取百度网盘认证状态异常:', e)
+    return null
+  }
+}
+
+/**
+ * 清除百度网盘cookie
+ */
+export const clearBaiduPanCookie = async (): Promise<boolean> => {
+  try {
+    const response = await request.delete('/auth/clear_cookie/baidu_pan')
+    
+    if (response.data.code === 0) {
+      toast.success('已清除百度网盘的登录信息')
+      return true
+    } else {
+      console.error('❌ 清除百度网盘cookie失败:', response.data.message)
+      toast.error(response.data.message || '清除失败')
+      return false
+    }
+  } catch (e) {
+    console.error('❌ 清除百度网盘cookie异常:', e)
+    toast.error('清除失败，请稍后重试')
+    return false
+  }
 } 

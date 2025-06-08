@@ -19,6 +19,7 @@ import LoginModal from '@/components/LoginModal'
 import { uploadFile } from '@/services/upload.ts'
 import { useTaskStore } from '@/store/taskStore'
 import { useModelStore } from '@/store/modelStore'
+import BaiduPanFileSelector from '@/components/BaiduPanFileSelector'
 import {
   Tooltip,
   TooltipContent,
@@ -193,8 +194,9 @@ const NoteForm = () => {
   const onSubmit = async (values: NoteFormValues) => {
     // 如果是重试任务，不需要设置submitting状态
     if (currentTaskId) {
+      const { auto_detect_collection, max_collection_videos, auto_save_notion, ...retryValues } = values
       retryTask(currentTaskId, {
-        ...values,
+        ...retryValues,
         provider_id: modelList.find(m => m.model_name === values.model_name)!.provider_id,
         task_id: currentTaskId,
       })
@@ -402,7 +404,9 @@ const NoteForm = () => {
             name="video_url"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>视频链接</FormLabel>
+                <FormLabel>
+                  {platform === 'baidu_pan' ? '百度网盘文件' : '视频链接'}
+                </FormLabel>
                 <FormControl>
                   {platform === 'local' ? (
                     <div className="space-y-2">
@@ -421,6 +425,42 @@ const NoteForm = () => {
                         className="w-full rounded border border-neutral-300 px-3 py-2 text-sm"
                       />
                     </div>
+                  ) : platform === 'baidu_pan' ? (
+                    <div className="space-y-2">
+                      <BaiduPanFileSelector 
+                        taskConfig={{
+                          quality: form.watch('quality'),
+                          model_name: form.watch('model_name'),
+                          provider_id: modelList.find(m => m.model_name === form.watch('model_name'))?.provider_id || 'openai',
+                          style: form.watch('style'),
+                          format: form.watch('format'),
+                          screenshot: form.watch('screenshot'),
+                          link: form.watch('link'),
+                          video_understanding: form.watch('video_understanding'),
+                          video_interval: form.watch('video_interval'),
+                          grid_size: form.watch('grid_size'),
+                          extras: form.watch('extras')
+                        }}
+                                                 onTasksCreated={(tasks) => {
+                           // 处理创建的任务
+                           console.log('百度网盘任务创建成功:', tasks)
+                           message.success(`已成功为 ${tasks.length} 个文件创建任务！`)
+                           // 添加任务到任务存储
+                           const formValues = form.getValues()
+                           addPendingTasks(tasks.map(task => ({
+                             task_id: task.task_id,
+                             video_url: `baidu_pan://file/${task.filename}`,
+                             title: task.title
+                           })), 'baidu_pan', {
+                             ...formValues,
+                             platform: 'baidu_pan'
+                           })
+                         }}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        点击上方按钮选择百度网盘中的视频文件
+                      </p>
+                    </div>
                   ) : (
                     <Input
                       placeholder={`请输入${
@@ -436,7 +476,7 @@ const NoteForm = () => {
           />
 
           {/* 合集识别开关 */}
-          {platform !== 'local' && (
+          {platform !== 'local' && platform !== 'baidu_pan' && (
             <FormField
               control={form.control}
               name="auto_detect_collection"
@@ -472,7 +512,7 @@ const NoteForm = () => {
           )}
 
           {/* 合集设置 */}
-          {platform !== 'local' && (
+          {platform !== 'local' && platform !== 'baidu_pan' && (
             <FormField
               control={form.control}
               name="max_collection_videos"

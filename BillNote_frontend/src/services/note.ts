@@ -331,3 +331,63 @@ export const batch_clear_reset_tasks = async (task_ids: string[], force_clear: b
     throw e
   }
 }
+
+// 百度网盘相关API
+
+// 获取百度网盘认证状态
+export const getBaiduPanAuthStatus = async () => {
+  try {
+    const response = await request.get('/baidu_pan/auth_status')
+    return response.data
+  } catch (e: any) {
+    console.error('❌ 获取百度网盘认证状态失败:', e)
+    throw e
+  }
+}
+
+// 获取百度网盘文件列表
+export const getBaiduPanFileList = async (path: string = "/", shareCode?: string, extractCode?: string) => {
+  try {
+    const params: any = { path }
+    if (shareCode) params.share_code = shareCode
+    if (extractCode) params.extract_code = extractCode
+    
+    const response = await request.get('/baidu_pan/file_list', { params })
+    
+    if (response.data.code === 0) {
+      return response.data.data
+    } else {
+      toast.error(response.data.message || '获取文件列表失败')
+      throw new Error(response.data.message || '获取文件列表失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 获取百度网盘文件列表失败:', e)
+    toast.error('获取文件列表失败，请稍后重试')
+    throw e
+  }
+}
+
+// 选择百度网盘文件并创建任务
+export const selectBaiduPanFiles = async (selectedFiles: any[], taskConfig: any) => {
+  try {
+    const data = {
+      selected_files: selectedFiles,
+      task_config: taskConfig
+    }
+    
+    const response = await request.post('/baidu_pan/select_files', data)
+    
+    if (response.data.code === 0) {
+      const result = response.data.data
+      toast.success(result.message || `已成功为 ${result.total_tasks} 个文件创建任务`)
+      return result
+    } else {
+      toast.error(response.data.message || '选择文件失败')
+      throw new Error(response.data.message || '选择文件失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 选择百度网盘文件失败:', e)
+    toast.error('选择文件失败，请稍后重试')
+    throw e
+  }
+}

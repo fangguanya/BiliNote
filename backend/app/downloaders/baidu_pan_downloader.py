@@ -33,11 +33,17 @@ class BaiduPanDownloader(Downloader, ABC):
             'Referer': 'https://pan.baidu.com/',
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
         }
         
         # 支持的视频格式
         self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts'}
         self.audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a'}
+        
+        # 关键cookie名称
+        self.critical_cookies = ['BDUSS', 'STOKEN', 'PSTM']
+        self.optional_cookies = ['BAIDUID', 'BAIDUID_BFESS', 'PASSID', 'UBI', 'UBI_BFESS', 'PANPSC']
         
         self._setup_session()
 
@@ -46,15 +52,43 @@ class BaiduPanDownloader(Downloader, ABC):
         cookie = self.cookie_manager.get("baidu_pan")
         if cookie:
             logger.info("🍪 使用已保存的百度网盘cookie")
+            logger.debug(f"🔍 Cookie长度: {len(cookie)} 字符")
+            
             # 解析cookie字符串并设置到session
+            cookie_count = 0
+            parsed_cookies = {}
+            
             for cookie_pair in cookie.split(';'):
                 if '=' in cookie_pair:
                     name, value = cookie_pair.split('=', 1)
-                    self.session.cookies.set(name.strip(), value.strip(), domain='.baidu.com')
+                    name = name.strip()
+                    value = value.strip()
+                    
+                    if name and value:  # 确保名称和值都不为空
+                        self.session.cookies.set(name, value, domain='.baidu.com')
+                        parsed_cookies[name] = value
+                        cookie_count += 1
+                        
+                        # 只记录重要cookie的名称，不记录完整值（安全考虑）
+                        if name in self.critical_cookies:
+                            logger.debug(f"🔑 关键Cookie设置: {name}={value[:10]}...")
+                        elif name in self.optional_cookies:
+                            logger.debug(f"📋 可选Cookie设置: {name}")
+            
+            logger.info(f"📊 共解析设置了 {cookie_count} 个cookie")
+            
+            # 验证关键cookie是否存在
+            missing_critical = [c for c in self.critical_cookies if c not in parsed_cookies]
+            if missing_critical:
+                logger.warning(f"⚠️ 缺少关键cookie: {missing_critical}")
+                logger.warning("💡 建议重新获取完整的百度网盘cookie，包括BDUSS、STOKEN、PSTM")
+            else:
+                logger.info("✅ 关键认证cookie已齐全")
             
             self.headers['Cookie'] = cookie
         else:
-            logger.warning("⚠️ 未找到百度网盘cookie，部分功能可能受限")
+            logger.warning("⚠️ 未找到百度网盘cookie，需要登录获取完整cookie")
+            logger.info("💡 请访问 https://pan.baidu.com 登录后，在浏览器开发者工具中复制完整cookie")
 
     def _check_auth_required(self, response_data: dict) -> bool:
         """检查是否需要认证"""
@@ -62,17 +96,52 @@ class BaiduPanDownloader(Downloader, ABC):
         error_msg = response_data.get('errmsg', '')
         
         # 百度网盘常见的认证错误码
-        auth_error_codes = [-6, -9, 12, 130]  # 需要登录、cookie过期、验证失败等
+        auth_error_codes = [-6, -9, 12, 130, 2, 31119, 31329]  # 需要登录、cookie过期、验证失败等
         
         if error_code in auth_error_codes:
             return True
             
-        auth_keywords = ['登录', 'cookie', '验证', '认证', 'token']
-        return any(keyword in error_msg for keyword in auth_keywords)
+        # 检查错误消息中的认证关键词
+        auth_keywords = ['登录', 'cookie', '验证', '认证', 'token', 'unauthorized', 'forbidden', 'access denied']
+        error_msg_lower = error_msg.lower() if error_msg else ''
+        return any(keyword in error_msg_lower for keyword in auth_keywords)
+
+    def _validate_cookie_status(self) -> bool:
+        """验证当前cookie状态"""
+        try:
+            # 尝试获取用户信息来验证cookie有效性
+            url = f"{self.api_base}/uinfo"
+            response = self.session.get(url, headers=self.headers, timeout=10)
+            
+            if response.status_code != 200:
+                logger.warning(f"⚠️ Cookie验证请求失败: HTTP {response.status_code}")
+                return False
+            
+            data = response.json()
+            if data.get('errno') == 0:
+                user_info = data.get('user_info', {})
+                username = user_info.get('baidu_name', '未知用户')
+                logger.info(f"✅ Cookie验证成功，当前用户: {username}")
+                return True
+            else:
+                logger.warning(f"⚠️ Cookie验证失败: errno={data.get('errno')}, errmsg={data.get('errmsg')}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Cookie验证异常: {e}")
+            return False
 
     def _make_request(self, url: str, params: dict = None, method: str = 'GET') -> dict:
         """发起API请求"""
         try:
+            logger.debug(f"🌐 发起{method}请求: {url}")
+            logger.debug(f"📋 请求参数: {params}")
+            
+            # 添加时间戳参数防止缓存
+            if params is None:
+                params = {}
+            params['_'] = int(time.time() * 1000)
+            
             response = self.session.request(
                 method=method,
                 url=url,
@@ -81,25 +150,61 @@ class BaiduPanDownloader(Downloader, ABC):
                 timeout=30
             )
             
+            logger.debug(f"📊 响应状态码: {response.status_code}")
+            
             response.raise_for_status()
             
             try:
                 data = response.json()
+                logger.debug(f"📄 响应数据: errno={data.get('errno')}, errmsg={data.get('errmsg', 'N/A')}")
             except ValueError:
+                logger.warning(f"⚠️ 响应不是JSON格式，内容预览: {response.text[:200]}")
                 # 如果不是JSON响应，可能是HTML登录页面
                 if 'login' in response.text.lower() or 'passport' in response.text.lower():
-                    raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
+                    logger.error("🔐 检测到登录页面，需要重新认证")
+                    raise AuthRequiredException("baidu_pan", "检测到登录页面，请重新获取完整cookie")
                 raise Exception(f"API返回非JSON响应: {response.text[:200]}")
             
             # 检查是否需要认证
             if self._check_auth_required(data):
-                raise AuthRequiredException("baidu_pan", "百度网盘认证失败，请重新登录")
+                logger.error(f"🔐 API返回认证错误: errno={data.get('errno')}, errmsg={data.get('errmsg')}")
+                
+                # 详细检查当前使用的cookie信息
+                current_cookies = list(self.session.cookies.keys())
+                logger.error(f"🍪 当前会话cookie列表: {current_cookies}")
+                
+                # 检查关键cookie是否存在
+                missing_critical = [c for c in self.critical_cookies if c not in current_cookies]
+                existing_critical = [c for c in self.critical_cookies if c in current_cookies]
+                
+                if missing_critical:
+                    logger.error(f"❌ 缺少关键cookie: {missing_critical}")
+                    
+                if existing_critical:
+                    logger.info(f"✅ 已有关键cookie: {existing_critical}")
+                
+                # 提供更详细的解决方案
+                if missing_critical:
+                    error_msg = f"百度网盘认证失败，缺少关键cookie: {', '.join(missing_critical)}。\n"
+                    error_msg += "请按以下步骤重新获取完整cookie：\n"
+                    error_msg += "1. 在浏览器中访问 https://pan.baidu.com\n"
+                    error_msg += "2. 登录您的百度账号\n"
+                    error_msg += "3. 按F12打开开发者工具，转到Application/存储 -> Cookies\n"
+                    error_msg += "4. 复制所有cookie值，确保包含BDUSS、STOKEN、PSTM\n"
+                    error_msg += "5. 在系统设置中更新百度网盘cookie"
+                else:
+                    error_msg = "百度网盘认证失败，cookie可能已过期，请重新登录获取新的cookie"
+                
+                raise AuthRequiredException("baidu_pan", error_msg)
             
             return data
             
         except requests.RequestException as e:
             logger.error(f"❌ 百度网盘API请求失败: {e}")
-            raise Exception(f"网络请求失败: {str(e)}")
+            if "timeout" in str(e).lower():
+                raise Exception(f"网络请求超时，请检查网络连接: {str(e)}")
+            else:
+                raise Exception(f"网络请求失败: {str(e)}")
 
     def parse_share_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """解析分享链接，提取分享码和提取码"""
@@ -141,6 +246,12 @@ class BaiduPanDownloader(Downloader, ABC):
 
     def _get_personal_file_list(self, path: str) -> List[Dict]:
         """获取个人网盘文件列表"""
+        logger.info(f"📂 获取个人网盘文件列表: {path}")
+        
+        # 首先验证cookie状态
+        if not self._validate_cookie_status():
+            logger.warning("⚠️ Cookie验证失败，可能需要重新登录")
+        
         url = f"{self.api_base}/list"
         params = {
             'order': 'time',
@@ -149,7 +260,8 @@ class BaiduPanDownloader(Downloader, ABC):
             'web': 1,
             'page': 1,
             'num': 100,
-            'dir': path
+            'dir': path,
+            'bdstoken': self._get_bdstoken()  # 添加bdstoken参数
         }
         
         try:
@@ -160,12 +272,39 @@ class BaiduPanDownloader(Downloader, ABC):
                 logger.info(f"✅ 获取到 {len(file_list)} 个文件/文件夹")
                 return file_list
             else:
-                logger.error(f"❌ 获取文件列表失败: {data.get('errmsg')}")
+                error_msg = data.get('errmsg', '未知错误')
+                logger.error(f"❌ 获取文件列表失败: errno={data.get('errno')}, errmsg={error_msg}")
+                
+                # 根据错误码提供具体建议
+                errno = data.get('errno')
+                if errno == -6:
+                    logger.error("💡 错误-6通常表示未登录或cookie无效，请重新获取cookie")
+                elif errno == -9:
+                    logger.error("💡 错误-9通常表示访问频率过高，请稍后重试")
+                elif errno == 2:
+                    logger.error("💡 错误2通常表示参数错误或权限不足")
+                
                 return []
                 
         except Exception as e:
             logger.error(f"❌ 获取个人网盘文件列表失败: {e}")
             return []
+
+    def _get_bdstoken(self) -> Optional[str]:
+        """尝试获取bdstoken"""
+        try:
+            # 访问网盘首页获取bdstoken
+            response = self.session.get("https://pan.baidu.com/disk/home", headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                # 从页面中提取bdstoken
+                bdstoken_match = re.search(r'"bdstoken":"([^"]+)"', response.text)
+                if bdstoken_match:
+                    bdstoken = bdstoken_match.group(1)
+                    logger.debug(f"🔑 获取到bdstoken: {bdstoken[:10]}...")
+                    return bdstoken
+        except Exception as e:
+            logger.debug(f"获取bdstoken失败: {e}")
+        return None
 
     def _get_share_file_list(self, share_code: str, extract_code: str = None, path: str = "/") -> List[Dict]:
         """获取分享链接文件列表"""
