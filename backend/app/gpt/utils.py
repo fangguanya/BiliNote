@@ -65,7 +65,7 @@ def estimate_image_tokens_from_base64(image_urls: list) -> int:
             base64_part = image_url.split(',', 1)[-1] if ',' in image_url else image_url
             
             # base64字符数量估算token（经验公式：base64字符数 / 3）
-            base64_tokens = len(base64_part) // 3
+            base64_tokens = len(base64_part) // 15
             total_tokens += base64_tokens
             
             logger.debug(f"📸 图片token估算: base64长度={len(base64_part)}, 估算tokens={base64_tokens}")
