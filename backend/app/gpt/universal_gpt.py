@@ -2,7 +2,7 @@ from app.gpt.base import GPT
 from app.gpt.prompt_builder import generate_base_prompt
 from app.models.gpt_model import GPTSource
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK
-from app.gpt.utils import fix_markdown, estimate_tokens, split_segments_by_tokens, merge_markdown_contents, create_chunk_summary_prompt
+from app.gpt.utils import fix_markdown, estimate_tokens, estimate_mixed_content_tokens, split_segments_by_tokens, split_segments_with_images_by_tokens, merge_markdown_contents, create_chunk_summary_prompt
 from app.models.transcriber_model import TranscriptSegment
 from app.utils.retry_utils import retry_on_rate_limit
 from datetime import timedelta
@@ -96,14 +96,29 @@ class UniversalGPT(GPT):
         self.link = source.link
         source.segment = self.ensure_segments_type(source.segment)
 
-        # 首先估算总token数
+        # 构建基础转录文本
         full_segment_text = self._build_segment_text(source.segment)
-        estimated_tokens = estimate_tokens(full_segment_text)
         
-        logger.info(f"📊 转录内容token估算: {estimated_tokens}")
+        # 创建完整的prompt文本（不包含图片）
+        full_content_text = generate_base_prompt(
+            title=source.title,
+            segment_text=full_segment_text,
+            tags=source.tags,
+            _format=source._format,
+            style=source.style,
+            extras=source.extras,
+        )
+        
+        # 估算总token数（包含文本和图片）
+        video_img_urls = source.video_img_urls or []
+        estimated_tokens = estimate_mixed_content_tokens(full_content_text, video_img_urls)
+        
+        logger.info(f"📊 混合内容token估算: {estimated_tokens}")
+        logger.info(f"📊 其中转录文本: {estimate_tokens(full_segment_text)}")
+        logger.info(f"📊 其中图片内容: {len(video_img_urls)}张图片")
         
         # 设置token限制（根据不同模型调整）
-        max_tokens = 80000  # 默认限制
+        max_tokens = 80000
         if 'gpt-4' in self.model.lower():
             max_tokens = 120000  # GPT-4有更高的限制
         elif 'gpt-3.5' in self.model.lower():
@@ -148,23 +163,27 @@ class UniversalGPT(GPT):
         # 内容过长，需要分块处理
         logger.warning(f"⚠️ 内容过长 ({estimated_tokens} tokens)，启用分块处理模式")
         
-        # 分割segments
-        segment_chunks = split_segments_by_tokens(source.segment, max_tokens)
-        logger.info(f"🔄 已分割为 {len(segment_chunks)} 个分块")
+        # 使用新的混合内容分割函数
+        chunk_results = split_segments_with_images_by_tokens(
+            source.segment, 
+            video_img_urls, 
+            max_tokens
+        )
+        logger.info(f"🔄 已分割为 {len(chunk_results)} 个分块")
         
         # 处理每个分块
-        chunk_results = []
-        for i, chunk_segments in enumerate(segment_chunks):
+        summary_results = []
+        for i, (chunk_segments, chunk_images) in enumerate(chunk_results):
             chunk_index = i + 1
             is_first = (i == 0)
-            is_last = (i == len(segment_chunks) - 1)
+            is_last = (i == len(chunk_results) - 1)
             
-            logger.info(f"🔄 处理分块 {chunk_index}/{len(segment_chunks)}: {len(chunk_segments)} 个片段")
+            logger.info(f"🔄 处理分块 {chunk_index}/{len(chunk_results)}: {len(chunk_segments)}个片段, {len(chunk_images)}张图片")
             
             # 为当前分块创建特殊的prompt
             chunk_prompt = create_chunk_summary_prompt(
                 chunk_index=chunk_index,
-                total_chunks=len(segment_chunks),
+                total_chunks=len(chunk_results),
                 is_first=is_first,
                 is_last=is_last
             )
@@ -174,24 +193,24 @@ class UniversalGPT(GPT):
                     chunk_segments,
                     title=source.title,
                     tags=source.tags,
-                    video_img_urls=source.video_img_urls if is_first else [],  # 只在第一个分块包含图片
+                    video_img_urls=chunk_images,  # 只传递分配给当前分块的图片
                     _format=source._format,
                     style=source.style,
                     extras=source.extras,
                     chunk_prompt=chunk_prompt
                 )
                 
-                chunk_results.append(chunk_result)
-                logger.info(f"✅ 分块 {chunk_index}/{len(segment_chunks)} 处理完成")
+                summary_results.append(chunk_result)
+                logger.info(f"✅ 分块 {chunk_index}/{len(chunk_results)} 处理完成")
                 
             except Exception as e:
                 logger.error(f"❌ 分块 {chunk_index} 处理失败: {e}")
                 # 如果某个分块失败，添加错误信息
-                chunk_results.append(f"## 第 {chunk_index} 部分\n\n*此部分处理失败: {str(e)}*\n")
+                summary_results.append(f"## 第 {chunk_index} 部分\n\n*此部分处理失败: {str(e)}*\n")
         
         # 合并所有分块结果
-        logger.info(f"🔗 开始合并 {len(chunk_results)} 个分块结果")
-        final_result = merge_markdown_contents(chunk_results)
+        logger.info(f"🔗 开始合并 {len(summary_results)} 个分块结果")
+        final_result = merge_markdown_contents(summary_results)
         
         logger.info(f"✅ 分块处理和合并完成，最终内容长度: {len(final_result)} 字符")
         return final_result

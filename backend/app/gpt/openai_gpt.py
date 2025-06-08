@@ -3,7 +3,7 @@ from app.gpt.base import GPT
 from openai import OpenAI
 from app.gpt.prompt import BASE_PROMPT, AI_SUM, SCREENSHOT, LINK
 from app.gpt.provider.OpenAI_compatible_provider import OpenAICompatibleProvider
-from app.gpt.utils import fix_markdown, estimate_tokens, split_segments_by_tokens, merge_markdown_contents, create_chunk_summary_prompt
+from app.gpt.utils import fix_markdown, estimate_tokens, estimate_mixed_content_tokens, split_segments_by_tokens, merge_markdown_contents, create_chunk_summary_prompt
 from app.models.gpt_model import GPTSource
 from app.models.transcriber_model import TranscriptSegment
 from app.utils.retry_utils import retry_on_rate_limit
@@ -88,9 +88,23 @@ class OpenaiGPT(GPT):
         
         # 首先估算总token数
         full_segment_text = self._build_segment_text(source.segment)
-        estimated_tokens = estimate_tokens(full_segment_text)
         
-        logger.info(f"📊 转录内容token估算: {estimated_tokens}")
+        # 创建完整的prompt文本（不包含图片）
+        full_content_text = self._create_prompt_text(
+            title=source.title,
+            segment_text=full_segment_text,
+            tags=source.tags,
+            link=source.link,
+            screenshot=source.screenshot
+        )
+        
+        # 估算总token数（包含文本和图片）
+        video_img_urls = source.video_img_urls or []
+        estimated_tokens = estimate_mixed_content_tokens(full_content_text, video_img_urls)
+        
+        logger.info(f"📊 混合内容token估算: {estimated_tokens}")
+        logger.info(f"📊 其中转录文本: {estimate_tokens(full_segment_text)}")
+        logger.info(f"📊 其中图片内容: {len(video_img_urls)}张图片")
         
         # 设置token限制（根据不同模型调整）
         max_tokens = 80000  # 默认限制
