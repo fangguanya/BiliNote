@@ -5,6 +5,7 @@ import {
   KuaishouLogo,
   LocalLogo,
   YoutubeLogo,
+  BaiduPanLogo,
 } from '@/components/Icons/platform.tsx'
 
 export const noteFormats = [
@@ -26,10 +27,18 @@ export const noteStyles = [
   { label: '会议纪要', value: 'meeting_minutes' },
 ] as const
 
+export const downloadQualities = [
+  { label: '快速 (32kbps)', value: 'fast' },
+  { label: '中等 (64kbps)', value: 'medium' },
+  { label: '高质量 (128kbps)', value: 'slow' },
+  { label: '原始质量', value: 'original' },
+] as const
+
 export const videoPlatforms = [
   { label: '哔哩哔哩', value: 'bilibili', logo: BiliBiliLogo },
   { label: 'YouTube', value: 'youtube', logo: YoutubeLogo },
   { label: '抖音', value: 'douyin', logo: DouyinLogo },
   { label: '快手', value: 'kuaishou', logo: KuaishouLogo },
   { label: '本地视频', value: 'local', logo: LocalLogo },
+  { label: '百度网盘', value: 'baidu_pan', logo: BaiduPanLogo },
 ] as const

@@ -8,6 +8,10 @@ from app.downloaders.base import Downloader, DownloadQuality
 from app.models.notes_model import AudioDownloadResult
 from app.utils.path_helper import get_data_dir
 from app.utils.url_parser import extract_video_id
+from app.utils.title_cleaner import smart_title_clean
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class YoutubeDownloader(Downloader, ABC):
@@ -40,16 +44,20 @@ class YoutubeDownloader(Downloader, ABC):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
             video_id = info.get("id")
-            title = info.get("title")
+            original_title = info.get("title")
             duration = info.get("duration", 0)
             cover_url = info.get("thumbnail")
             ext = info.get("ext", "m4a")  # 兜底用 m4a
             audio_path = os.path.join(output_dir, f"{video_id}.{ext}")
         print('os.path.join(output_dir, f"{video_id}.{ext}")',os.path.join(output_dir, f"{video_id}.{ext}"))
 
+        # 🧹 清理标题，去掉合集相关字符串  
+        cleaned_title = smart_title_clean(original_title, platform="youtube", preserve_episode=False)
+        logger.info(f"🧹 YouTube标题清理: '{original_title}' -> '{cleaned_title}'")
+
         return AudioDownloadResult(
             file_path=audio_path,
-            title=title,
+            title=cleaned_title,  # 使用清理后的标题
             duration=duration,
             cover_url=cover_url,
             platform="youtube",

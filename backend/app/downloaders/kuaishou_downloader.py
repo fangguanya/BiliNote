@@ -10,6 +10,10 @@ from app.downloaders.kuaishou_helper.kuaishou import KuaiShou
 from app.enmus.note_enums import DownloadQuality
 from app.models.audio_model import AudioDownloadResult
 from app.utils.path_helper import get_data_dir
+from app.utils.title_cleaner import smart_title_clean
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class KuaiShouDownloader(Downloader, ABC):
@@ -34,15 +38,19 @@ class KuaiShouDownloader(Downloader, ABC):
         print(video_raw_info)
         photo_info = video_raw_info['visionVideoDetail']['photo']
         video_id = photo_info['id']
-        title = photo_info['caption'].strip().replace('\n', '').replace(' ', '_')[:50]
+        original_title = photo_info['caption'].strip().replace('\n', '').replace(' ', '_')[:50]
         mp4_path = os.path.join(output_dir, f"{video_id}.mp4")
         mp3_path = os.path.join(output_dir, f"{video_id}.mp3")
+
+        # 🧹 清理标题，去掉合集相关字符串
+        cleaned_title = smart_title_clean(original_title, platform="kuaishou", preserve_episode=False)
+        logger.info(f"🧹 快手标题清理: '{original_title}' -> '{cleaned_title}'")
 
         if os.path.exists(mp3_path):
             print(f"[已存在] 跳过下载: {mp3_path}")
             return AudioDownloadResult(
                 file_path=mp3_path,
-                title=title,
+                title=cleaned_title,  # 使用清理后的标题
                 duration=photo_info['duration'],
                 cover_url=photo_info['coverUrl'],
                 platform="kuaishou",
@@ -72,7 +80,7 @@ class KuaiShouDownloader(Downloader, ABC):
 
         return AudioDownloadResult(
             file_path=mp3_path,
-            title=photo_info['caption'],
+            title=cleaned_title,  # 使用清理后的标题
             duration=photo_info['duration'],
             cover_url=photo_info['coverUrl'],
             platform="kuaishou",

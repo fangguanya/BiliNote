@@ -3,10 +3,12 @@ from typing import Optional, List, Tuple
 import yt_dlp
 import requests
 from urllib.parse import urlparse, parse_qs
+import os
 
 # 添加日志支持
 from app.utils.logger import get_logger
 from app.services.cookie_manager import CookieConfigManager
+from app.utils.title_cleaner import smart_title_clean
 
 logger = get_logger(__name__)
 
@@ -18,7 +20,7 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
     从视频链接中提取视频 ID
 
     :param url: 视频链接
-    :param platform: 平台名（bilibili / youtube / douyin）
+    :param platform: 平台名（bilibili / youtube / douyin / baidu_pan）
     :return: 提取到的视频 ID 或 None
     """
     if platform == "bilibili":
@@ -35,6 +37,25 @@ def extract_video_id(url: str, platform: str) -> Optional[str]:
         # 匹配 douyin.com/video/1234567890123456789
         match = re.search(r"/video/(\d+)", url)
         return match.group(1) if match else None
+
+    elif platform == "baidu_pan":
+        # 百度网盘分享链接：https://pan.baidu.com/s/1ABC123DEF
+        # 或目录链接：https://pan.baidu.com/disk/home#/path=/视频目录
+        share_match = re.search(r"/s/([0-9A-Za-z_-]+)", url)
+        if share_match:
+            return share_match.group(1)
+        
+        # 目录路径提取
+        path_match = re.search(r"#/path=([^&]+)", url)
+        if path_match:
+            return path_match.group(1)
+        
+        # 文件fsid提取（用于特定文件）
+        fsid_match = re.search(r"fsid=(\d+)", url)
+        if fsid_match:
+            return fsid_match.group(1)
+        
+        return None
 
     return None
 
@@ -149,41 +170,44 @@ def is_video_part_of_collection(url: str) -> bool:
 
 def is_collection_url(url: str, platform: str) -> bool:
     """
-    检测URL是否为合集类型
+    检测是否为合集URL
     
-    :param url: 视频链接
+    支持的合集类型：
+    - B站：收藏夹、个人合集、系列视频、稍后再看、番剧系列、多分P视频、UGC合集、用户投稿、频道首页
+    - 抖音：用户主页、话题页面
+    - 百度网盘：目录、分享文件夹
+    
+    :param url: 视频链接  
     :param platform: 平台名
-    :return: 是否为合集URL
+    :return: 是否为合集
     """
-    logger.info(f"🔍 检测合集URL: {url}, 平台: {platform}")
+    logger.info(f"🔍 检测合集URL: {url} (平台: {platform})")
     
     if platform == "bilibili":
-        # 明确的合集URL模式（参考bilibili-API-collect项目的分类）
+        # B站合集检测模式（已改进）
         collection_patterns = [
-            r"space\.bilibili\.com/\d+/favlist",  # 收藏夹
-            r"space\.bilibili\.com/\d+/channel/collectiondetail",  # 合集
-            r"space\.bilibili\.com/\d+/channel/seriesdetail",  # 系列
-            r"bilibili\.com/medialist/play/",  # 播放列表
-            r"bilibili\.com/watchlater",  # 稍后再看
-            r"www\.bilibili\.com/watchlater",  # 稍后再看
-            r"bilibili\.com/bangumi/play/ss\d+",  # 番剧系列
-            r"bilibili\.com/bangumi/media/md\d+",  # 番剧媒体
-            r"space\.bilibili\.com/\d+/channel/index",  # 频道主页
-            r"space\.bilibili\.com/\d+/video",  # 用户投稿
+            r"favlist\?fid=",                    # 收藏夹
+            r"collectiondetail\?sid=",           # 个人合集
+            r"seriesdetail\?sid=",               # 系列视频  
+            r"watchlater",                       # 稍后再看
+            r"bangumi/play/ss\d+",               # 番剧系列
+            r"bangumi/media/md\d+",              # 番剧媒体
+            r"space\.bilibili\.com/\d+/video",   # 用户投稿页
+            r"channel/index",                    # 频道首页
         ]
         
         for i, pattern in enumerate(collection_patterns):
             if re.search(pattern, url):
-                pattern_names = ["收藏夹", "合集", "系列", "播放列表", "稍后再看", "稍后再看", 
-                               "番剧系列", "番剧媒体", "频道", "用户投稿"]
+                pattern_names = ["收藏夹", "个人合集", "系列视频", "稍后再看", "番剧系列", "番剧媒体", "用户投稿", "频道首页"]
                 logger.info(f"✅ 检测到B站{pattern_names[i]}链接: {pattern}")
                 return True
         
-        # 检查单视频是否可能属于合集（需要通过API或yt-dlp进一步确认）
-        video_pattern = r"bilibili\.com/video/[A-Za-z0-9]+"
-        if re.search(video_pattern, url):
-            logger.info("📺 检测到B站普通视频链接，检查是否属于合集")
-            return is_video_part_of_collection(url)
+        # 检查是否为多分P视频（单独处理）
+        if re.search(r"bilibili\.com/video/BV", url):
+            # 这里需要进一步API调用来确认是否为多分P
+            logger.info("🔍 检测到B站视频，需要进一步检查是否为多分P")
+            # 注：多分P检测将在 is_video_part_of_collection 函数中处理
+            return False
         
         logger.info("❌ 不是B站合集链接")
         return False
@@ -204,34 +228,52 @@ def is_collection_url(url: str, platform: str) -> bool:
         logger.info("❌ 不是抖音合集链接")
         return False
     
+    elif platform == "baidu_pan":
+        # 百度网盘合集检测模式
+        collection_patterns = [
+            r"#/path=/",                         # 目录路径
+            r"/disk/home",                       # 个人网盘主页
+            r"dir\?path=",                       # 目录参数
+        ]
+        
+        for i, pattern in enumerate(collection_patterns):
+            if re.search(pattern, url):
+                pattern_names = ["目录路径", "网盘主页", "目录参数"]
+                logger.info(f"✅ 检测到百度网盘{pattern_names[i]}链接: {pattern}")
+                return True
+        
+        # 分享链接默认也可能包含多个文件
+        if re.search(r"/s/[0-9A-Za-z_-]+", url):
+            logger.info("✅ 检测到百度网盘分享链接，可能包含多个文件")
+            return True
+        
+        logger.info("❌ 不是百度网盘合集链接")
+        return False
+    
     logger.info(f"❌ 不支持的平台: {platform}")
     return False
 
 
 def extract_collection_videos(url: str, platform: str, max_videos: int = 50) -> List[Tuple[str, str]]:
     """
-    从合集URL中提取所有视频URL和标题
+    提取合集中的所有视频
     
     :param url: 合集链接
     :param platform: 平台名
-    :param max_videos: 最大提取视频数量
+    :param max_videos: 最大视频数量
     :return: [(video_url, title), ...] 列表
     """
-    logger.info(f"🎬 开始提取合集视频: {url}, 平台: {platform}, 最大数量: {max_videos}")
-    videos = []
+    logger.info(f"🎬 开始提取合集视频: {url} (平台: {platform}, 最大数量: {max_videos})")
     
     if platform == "bilibili":
-        videos = _extract_bilibili_collection_videos(url, max_videos)
+        return extract_bilibili_collection_videos(url, max_videos)
     elif platform == "douyin":
-        videos = _extract_douyin_collection_videos(url, max_videos)
-    
-    logger.info(f"📹 提取完成，共获得 {len(videos)} 个视频")
-    if videos:
-        logger.info(f"📋 视频列表预览（前3个）:")
-        for i, (video_url, title) in enumerate(videos[:3]):
-            logger.info(f"  {i+1}. {title} - {video_url}")
-    
-    return videos
+        return extract_douyin_collection_videos(url, max_videos)
+    elif platform == "baidu_pan":
+        return extract_baidu_pan_collection_videos(url, max_videos)
+    else:
+        logger.warning(f"⚠️ 不支持的平台: {platform}")
+        return []
 
 
 def _extract_bilibili_collection_videos(url: str, max_videos: int = 50) -> List[Tuple[str, str]]:
@@ -413,8 +455,11 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                             # 构造分P视频的URL
                             page_url = f"https://www.bilibili.com/video/{bv_id}?p={page['page']}"
                             # 修改：合集内部的视频只使用分P的标题，不包含合集名称
-                            page_title = page['part']  # 直接使用分P标题
-                            videos.append((page_url, page_title))
+                            original_title = page['part']  # 直接使用分P标题
+                            
+                            # 🧹 清理标题，去掉合集相关字符串
+                            cleaned_title = smart_title_clean(original_title, platform="bilibili", preserve_episode=False)
+                            videos.append((page_url, cleaned_title))
                     
                     logger.info(f"✅ 成功提取多分P视频 {len(videos)} 个分集")
                     return videos
@@ -452,7 +497,9 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                                     if similarity > 0.3 or any(keyword in up_title for keyword in series_keywords):
                                         up_bvid = up_video.get('bvid')
                                         if up_bvid:
-                                            related_videos.append((f"https://www.bilibili.com/video/{up_bvid}", up_title))
+                                            # 🧹 清理UP主相关视频标题
+                                            cleaned_up_title = smart_title_clean(up_title, platform="bilibili", preserve_episode=False)
+                                            related_videos.append((f"https://www.bilibili.com/video/{up_bvid}", cleaned_up_title))
                                 
                                 if len(related_videos) > 1:
                                     logger.info(f"✅ 发现 {len(related_videos)} 个相关系列视频")
@@ -485,7 +532,9 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                                 for archive in archives:
                                     if archive.get('bvid') and archive.get('title'):
                                         video_url = f"https://www.bilibili.com/video/{archive['bvid']}"
-                                        videos.append((video_url, archive['title']))
+                                        # 🧹 清理UGC合集标题
+                                        cleaned_archive_title = smart_title_clean(archive['title'], platform="bilibili", preserve_episode=False)
+                                        videos.append((video_url, cleaned_archive_title))
                                 
                                 logger.info(f"✅ 成功提取UGC合集 {len(videos)} 个视频")
                                 return videos
@@ -502,8 +551,10 @@ def _extract_bilibili_video_collection_via_ytdlp(url: str, max_videos: int = 50)
                         for episode in episodes:
                             if episode.get('bvid') and episode.get('title'):
                                 episode_url = f"https://www.bilibili.com/video/{episode['bvid']}"
-                                episode_title = f"{episode.get('title', '')}"
-                                videos.append((episode_url, episode_title.strip()))
+                                original_episode_title = f"{episode.get('title', '')}"
+                                # 🧹 清理番剧集数标题
+                                cleaned_episode_title = smart_title_clean(original_episode_title, platform="bilibili", preserve_episode=False)
+                                videos.append((episode_url, cleaned_episode_title.strip()))
                         
                     if videos:
                         logger.info(f"✅ 成功提取番剧合集 {len(videos)} 个剧集")
@@ -949,7 +1000,7 @@ def identify_platform(url: str) -> Optional[str]:
     根据URL识别视频平台
     
     :param url: 视频链接
-    :return: 平台名称 (bilibili/douyin/youtube/kuaishou) 或 None
+    :return: 平台名称 (bilibili/douyin/youtube/kuaishou/baidu_pan) 或 None
     """
     logger.info(f"🔍 识别平台: {url}")
     
@@ -973,5 +1024,72 @@ def identify_platform(url: str) -> Optional[str]:
         logger.info("✅ 识别为快手平台")
         return "kuaishou"
     
+    # 百度网盘
+    elif re.search(r"pan\.baidu\.com", url):
+        logger.info("✅ 识别为百度网盘平台")
+        return "baidu_pan"
+    
     logger.warning(f"⚠️ 未识别的平台: {url}")
     return None
+
+
+def extract_baidu_pan_collection_videos(url: str, max_videos: int = 50) -> List[Tuple[str, str]]:
+    """
+    提取百度网盘目录中的所有媒体文件
+    
+    :param url: 百度网盘目录链接
+    :param max_videos: 最大文件数量
+    :return: [(file_url, filename), ...] 列表
+    """
+    logger.info(f"☁️ 开始提取百度网盘媒体文件: {url}")
+    
+    try:
+        from app.downloaders.baidu_pan_downloader import BaiduPanDownloader
+        
+        downloader = BaiduPanDownloader()
+        
+        # 解析URL类型
+        share_code, extract_code = downloader.parse_share_url(url)
+        
+        if share_code:
+            logger.info(f"📎 检测到分享链接: {share_code}")
+            file_list = downloader.get_file_list(share_code=share_code, extract_code=extract_code)
+        else:
+            # 个人网盘目录
+            path = downloader.parse_path_url(url)
+            logger.info(f"📁 检测到个人网盘路径: {path}")
+            file_list = downloader.get_file_list(path=path)
+        
+        if not file_list:
+            logger.warning("⚠️ 未找到任何文件")
+            return []
+        
+        # 过滤媒体文件
+        media_files = downloader.filter_media_files(file_list)
+        
+        if not media_files:
+            logger.warning("⚠️ 未找到任何媒体文件")
+            return []
+        
+        # 限制文件数量
+        media_files = media_files[:max_videos]
+        
+        # 构造返回结果
+        videos = []
+        for file_info in media_files:
+            filename = file_info.get('server_filename', '')
+            fs_id = str(file_info.get('fs_id', ''))
+            
+            # 构造虚拟URL（用于任务识别）
+            file_url = f"baidu_pan://file/{fs_id}?filename={filename}&source_url={url}"
+            title = os.path.splitext(filename)[0]  # 去掉扩展名作为标题
+            
+            videos.append((file_url, title))
+            logger.info(f"📄 找到媒体文件: {title}")
+        
+        logger.info(f"✅ 百度网盘媒体文件提取完成，共 {len(videos)} 个文件")
+        return videos
+        
+    except Exception as e:
+        logger.error(f"❌ 提取百度网盘媒体文件失败: {e}")
+        return []

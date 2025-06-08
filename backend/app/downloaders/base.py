@@ -9,7 +9,8 @@ from os import getenv
 QUALITY_MAP = {
     "fast": "32",
     "medium": "64",
-    "slow": "128"
+    "slow": "128",
+    "original": "original"  # 百度网盘原始质量
 }
 
 

@@ -515,15 +515,17 @@ class NotionService:
         blocks = []
         lines = markdown.split('\n')
         current_paragraph = []
+        i = 0
         
-        for line in lines:
-            line = line.strip()
+        while i < len(lines):
+            line = lines[i].strip()
             
             # 空行处理
             if not line:
                 if current_paragraph:
                     blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
                     current_paragraph = []
+                i += 1
                 continue
             
             # 处理包含内联图片的行
@@ -606,6 +608,7 @@ class NotionService:
                             if alt_text:
                                 error_text = f"[图片上传失败: {alt_text} - {os.path.basename(image_url)}]"
                             blocks.append(self._create_paragraph_block(error_text))
+                i += 1
                 continue
             
             # 如果没有图片，按原有逻辑处理
@@ -626,6 +629,7 @@ class NotionService:
                     blocks.append(self._create_heading_2_block(title_text))
                 else:
                     blocks.append(self._create_heading_3_block(title_text))
+                i += 1
                 continue
             
             # 列表处理
@@ -636,6 +640,7 @@ class NotionService:
                 
                 list_text = line[2:].strip()
                 blocks.append(self._create_bulleted_list_block(list_text))
+                i += 1
                 continue
             
             # 数字列表处理
@@ -646,6 +651,7 @@ class NotionService:
                 
                 list_text = re.sub(r'^\d+\.\s', '', line)
                 blocks.append(self._create_numbered_list_block(list_text))
+                i += 1
                 continue
             
             # 代码块处理
@@ -653,7 +659,53 @@ class NotionService:
                 if current_paragraph:
                     blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
                     current_paragraph = []
-                # 简单处理，这里可以扩展更复杂的代码块逻辑
+                
+                # 解析代码块
+                language = line[3:].strip() or 'text'  # 获取语言，默认为text
+                code_lines = []
+                
+                # 查找代码块结束
+                j = i + 1
+                while j < len(lines):
+                    if lines[j].strip() == '```':
+                        break
+                    code_lines.append(lines[j])
+                    j += 1
+                
+                # 创建代码块
+                if code_lines:
+                    code_content = '\n'.join(code_lines)
+                    blocks.append(self._create_code_block(code_content, language))
+                
+                # 跳过已处理的行（包括结束的```）
+                i = j + 1
+                continue
+            
+            # 表格处理
+            if '|' in line and line.count('|') >= 2:
+                if current_paragraph:
+                    blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
+                    current_paragraph = []
+                
+                # 收集表格行
+                table_rows = []
+                j = i
+                
+                while j < len(lines):
+                    current_line = lines[j].strip()
+                    if '|' in current_line and current_line.count('|') >= 2:
+                        # 跳过分隔线（如 |---|---|）
+                        if not re.match(r'^\|[\s\-:]+\|$', current_line):
+                            table_rows.append(current_line)
+                        j += 1
+                    else:
+                        break
+                
+                # 创建表格
+                if table_rows:
+                    blocks.append(self._create_table_block(table_rows))
+                
+                i = j
                 continue
             
             # 引用处理
@@ -664,10 +716,12 @@ class NotionService:
                 
                 quote_text = line[1:].strip()
                 blocks.append(self._create_quote_block(quote_text))
+                i += 1
                 continue
             
             # 普通段落
             current_paragraph.append(line)
+            i += 1
         
         # 处理最后的段落
         if current_paragraph:
@@ -688,48 +742,157 @@ class NotionService:
         }
     
     def _parse_rich_text(self, text: str) -> List[Dict[str, Any]]:
-        """解析文本中的链接和格式，返回rich_text数组"""
+        """解析文本中的链接、格式等，返回rich_text数组"""
         rich_text = []
         
-        # 匹配Markdown链接格式 [text](url)
-        link_pattern = r'\[([^\]]+)\]\(([^)]+)\)'
+        # 定义所有格式的正则表达式（按优先级排序）
+        patterns = [
+            # LaTeX 数学公式 ($$...$$) - 最高优先级
+            ('math', r'\$\$([^$]+?)\$\$'),
+            # 内联代码 (`...`) - 高优先级，避免与其他格式冲突
+            ('code', r'`([^`]+?)`'),
+            # 链接 ([text](url)) - 优先处理，避免与加粗斜体冲突
+            ('link', r'\[([^\]]+?)\]\(([^)]+?)\)'),
+            # 加粗 (**...** 或 __...__) 
+            ('bold_double', r'\*\*([^*]+?)\*\*'),
+            ('bold_underscore', r'__([^_]+?)__'),
+            # 删除线 (~~...~~)
+            ('strikethrough', r'~~([^~]+?)~~'),
+            # 斜体 (*...* 或 _..._) - 最后处理，避免与加粗冲突
+            ('italic_star', r'\*([^*]+?)\*'),
+            ('italic_underscore', r'_([^_]+?)_'),
+        ]
+        
+        # 创建一个包含所有模式的大正则表达式
+        combined_patterns = []
+        for pattern_name, pattern in patterns:
+            if pattern_name == 'link':
+                # 链接需要特殊处理，因为它有两个捕获组
+                combined_patterns.append(f'(?P<{pattern_name}>{pattern})')
+            else:
+                combined_patterns.append(f'(?P<{pattern_name}>{pattern})')
+        
+        combined_regex = '|'.join(combined_patterns)
+        
         last_end = 0
         
-        for match in re.finditer(link_pattern, text):
-            # 添加链接前的普通文本
+        for match in re.finditer(combined_regex, text):
+            # 添加匹配前的普通文本
             if match.start() > last_end:
                 plain_text = text[last_end:match.start()]
                 if plain_text:
+                    rich_text.extend(self._parse_nested_formats(plain_text))
+            
+            # 处理匹配的格式
+            match_type = match.lastgroup
+            
+            if match_type == 'math':
+                # LaTeX 数学公式 - 重新解析以获取正确内容
+                math_match = re.search(r'\$\$([^$]+?)\$\$', match.group(0))
+                if math_match:
+                    formula = math_match.group(1)
                     rich_text.append({
-                        "type": "text",
-                        "text": {
-                            "content": plain_text
+                        "type": "equation",
+                        "equation": {
+                            "expression": formula
                         }
                     })
             
-            # 验证并添加链接
-            link_text = match.group(1)
-            link_url = match.group(2)
-            
-            if self._is_valid_url(link_url):
-                rich_text.append({
-                    "type": "text",
-                    "text": {
-                        "content": link_text,
-                        "link": {
-                            "url": link_url
+            elif match_type == 'code':
+                # 内联代码 - 重新解析以获取正确内容
+                code_match = re.search(r'`([^`]+?)`', match.group(0))
+                if code_match:
+                    code_content = code_match.group(1)
+                    rich_text.append({
+                        "type": "text",
+                        "text": {
+                            "content": code_content
+                        },
+                        "annotations": {
+                            "code": True
                         }
-                    }
-                })
-            else:
-                # 如果URL无效，将其作为普通文本处理
-                logger.warning(f"⚠️ 无效URL，作为普通文本处理: [{link_text}]({link_url})")
-                rich_text.append({
-                    "type": "text",
-                    "text": {
-                        "content": f"[{link_text}]({link_url})"
-                    }
-                })
+                    })
+            
+            elif match_type in ['bold_double', 'bold_underscore']:
+                # 加粗文本 - 重新解析以获取正确内容
+                if match_type == 'bold_double':
+                    bold_match = re.search(r'\*\*([^*]+?)\*\*', match.group(0))
+                else:
+                    bold_match = re.search(r'__([^_]+?)__', match.group(0))
+                
+                if bold_match:
+                    bold_content = bold_match.group(1)
+                    rich_text.append({
+                        "type": "text",
+                        "text": {
+                            "content": bold_content
+                        },
+                        "annotations": {
+                            "bold": True
+                        }
+                    })
+            
+            elif match_type in ['italic_star', 'italic_underscore']:
+                # 斜体文本 - 重新解析以获取正确内容
+                if match_type == 'italic_star':
+                    italic_match = re.search(r'\*([^*]+?)\*', match.group(0))
+                else:
+                    italic_match = re.search(r'_([^_]+?)_', match.group(0))
+                
+                if italic_match:
+                    italic_content = italic_match.group(1)
+                    rich_text.append({
+                        "type": "text",
+                        "text": {
+                            "content": italic_content
+                        },
+                        "annotations": {
+                            "italic": True
+                        }
+                    })
+            
+            elif match_type == 'strikethrough':
+                # 删除线文本 - 重新解析以获取正确内容
+                strike_match = re.search(r'~~([^~]+?)~~', match.group(0))
+                if strike_match:
+                    strike_content = strike_match.group(1)
+                    rich_text.append({
+                        "type": "text",
+                        "text": {
+                            "content": strike_content
+                        },
+                        "annotations": {
+                            "strikethrough": True
+                        }
+                    })
+            
+            elif match_type == 'link':
+                # 链接处理
+                # 使用原始匹配重新提取链接内容
+                link_match = re.search(r'\[([^\]]+)\]\(([^)]+)\)', match.group(0))
+                if link_match:
+                    link_text = link_match.group(1)
+                    link_url = link_match.group(2)
+                    
+                    if self._is_valid_url(link_url):
+                        rich_text.append({
+                            "type": "text",
+                            "text": {
+                                "content": link_text,
+                                "link": {
+                                    "url": link_url
+                                }
+                            }
+                        })
+                    else:
+                        # 如果URL无效，将其作为普通文本处理
+                        logger.warning(f"⚠️ 无效URL，作为普通文本处理: [{link_text}]({link_url})")
+                        rich_text.append({
+                            "type": "text",
+                            "text": {
+                                "content": f"[{link_text}]({link_url})"
+                            }
+                        })
             
             last_end = match.end()
         
@@ -737,14 +900,9 @@ class NotionService:
         if last_end < len(text):
             remaining_text = text[last_end:]
             if remaining_text:
-                rich_text.append({
-                    "type": "text",
-                    "text": {
-                        "content": remaining_text
-                    }
-                })
+                rich_text.extend(self._parse_nested_formats(remaining_text))
         
-        # 如果没有链接，返回简单文本
+        # 如果没有任何格式，返回简单文本
         if not rich_text:
             rich_text = [{
                 "type": "text",
@@ -754,6 +912,21 @@ class NotionService:
             }]
         
         return rich_text
+    
+    def _parse_nested_formats(self, text: str) -> List[Dict[str, Any]]:
+        """处理嵌套格式（如同时有加粗和斜体）"""
+        # 简化版本：如果文本中没有特殊格式标记，直接返回普通文本
+        # 这里可以进一步扩展来处理更复杂的嵌套格式
+        if not any(marker in text for marker in ['**', '__', '*', '_', '`', '$$']):
+            return [{
+                "type": "text",
+                "text": {
+                    "content": text
+                }
+            }]
+        
+        # 如果有格式标记，递归调用主解析函数
+        return self._parse_rich_text(text)
     
     def _create_heading_1_block(self, text: str) -> Dict[str, Any]:
         """创建一级标题块"""
@@ -806,6 +979,95 @@ class NotionService:
             "type": "quote",
             "quote": {
                 "rich_text": self._parse_rich_text(text)
+            }
+        }
+    
+    def _create_code_block(self, code: str, language: str = "text") -> Dict[str, Any]:
+        """创建代码块"""
+        # 清理语言标识符，只保留Notion支持的语言
+        supported_languages = {
+            'javascript', 'typescript', 'python', 'java', 'c', 'cpp', 'csharp', 'c#',
+            'go', 'rust', 'php', 'ruby', 'swift', 'kotlin', 'scala', 'r', 'matlab',
+            'sql', 'html', 'css', 'scss', 'less', 'json', 'xml', 'yaml', 'markdown',
+            'bash', 'shell', 'powershell', 'dockerfile', 'makefile', 'text', 'plain'
+        }
+        
+        # 标准化语言名称
+        clean_language = language.lower().strip()
+        if clean_language in ['js', 'node']:
+            clean_language = 'javascript'
+        elif clean_language in ['ts']:
+            clean_language = 'typescript'
+        elif clean_language in ['py']:
+            clean_language = 'python'
+        elif clean_language in ['sh', 'zsh']:
+            clean_language = 'bash'
+        elif clean_language in ['yml']:
+            clean_language = 'yaml'
+        elif clean_language in ['md']:
+            clean_language = 'markdown'
+        elif clean_language not in supported_languages:
+            clean_language = 'text'
+        
+        return {
+            "type": "code",
+            "code": {
+                "caption": [],
+                "rich_text": [{
+                    "type": "text",
+                    "text": {
+                        "content": code
+                    }
+                }],
+                "language": clean_language
+            }
+        }
+    
+    def _create_table_block(self, table_rows: List[str]) -> Dict[str, Any]:
+        """创建表格块"""
+        if not table_rows:
+            return self._create_paragraph_block("空表格")
+        
+        # 解析表格数据
+        parsed_rows = []
+        for row in table_rows:
+            # 移除首尾的|，然后分割
+            cells = [cell.strip() for cell in row.strip('|').split('|')]
+            parsed_rows.append(cells)
+        
+        if not parsed_rows:
+            return self._create_paragraph_block("表格解析失败")
+        
+        # 确定表格尺寸
+        max_cols = max(len(row) for row in parsed_rows)
+        table_width = min(max_cols, 10)  # Notion表格最大10列
+        table_height = min(len(parsed_rows), 100)  # 限制表格高度
+        
+        # 创建表格行
+        table_children = []
+        for i, row in enumerate(parsed_rows[:table_height]):
+            # 确保每行都有足够的列
+            padded_row = row + [''] * (table_width - len(row))
+            table_row_cells = []
+            
+            for j, cell_content in enumerate(padded_row[:table_width]):
+                cell_rich_text = self._parse_rich_text(cell_content) if cell_content else []
+                table_row_cells.append(cell_rich_text)
+            
+            table_children.append({
+                "type": "table_row",
+                "table_row": {
+                    "cells": table_row_cells
+                }
+            })
+        
+        return {
+            "type": "table",
+            "table": {
+                "table_width": table_width,
+                "has_column_header": len(parsed_rows) > 1,  # 第一行作为表头
+                "has_row_header": False,
+                "children": table_children
             }
         }
     

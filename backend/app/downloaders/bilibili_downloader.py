@@ -11,6 +11,7 @@ from app.utils.url_parser import extract_video_id
 from app.services.cookie_manager import CookieConfigManager
 from app.exceptions.auth_exceptions import AuthRequiredException
 from app.utils.logger import get_logger
+from app.utils.title_cleaner import smart_title_clean
 
 logger = get_logger(__name__)
 
@@ -81,14 +82,18 @@ class BilibiliDownloader(Downloader, ABC):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
                 video_id = info.get("id")
-                title = info.get("title")
+                original_title = info.get("title")
                 duration = info.get("duration", 0)
                 cover_url = info.get("thumbnail")
                 audio_path = os.path.join(output_dir, f"{video_id}.mp3")
 
+            # 🧹 清理标题，去掉合集相关字符串
+            cleaned_title = smart_title_clean(original_title, platform="bilibili", preserve_episode=False)
+            logger.info(f"🧹 B站标题清理: '{original_title}' -> '{cleaned_title}'")
+
             return AudioDownloadResult(
                 file_path=audio_path,
-                title=title,
+                title=cleaned_title,  # 使用清理后的标题
                 duration=duration,
                 cover_url=cover_url,
                 platform="bilibili",

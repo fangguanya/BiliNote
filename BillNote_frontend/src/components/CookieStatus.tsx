@@ -23,6 +23,12 @@ const CookieStatusComponent: React.FC = () => {
       color: 'text-black',
       bgColor: 'bg-gray-50',
       borderColor: 'border-gray-200'
+    },
+    baidu_pan: {
+      name: '百度网盘',
+      color: 'text-blue-600',
+      bgColor: 'bg-blue-50',
+      borderColor: 'border-blue-200'
     }
   }
 

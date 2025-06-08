@@ -10,6 +10,10 @@ import os
 import subprocess
 
 from app.utils.video_helper import save_cover_to_static
+from app.utils.title_cleaner import smart_title_clean
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class LocalDownloader(Downloader, ABC):
@@ -53,26 +57,36 @@ class LocalDownloader(Downloader, ABC):
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"提取封面失败: {output_path}") from e
 
-    def convert_to_mp3(self,input_path: str, output_path: str = None) -> str:
+    def convert_to_mp3(self, input_path: str, output_dir: Optional[str] = None) -> str:
         """
-        将本地视频文件转为 MP3 音频文件
-        :param input_path: 输入文件路径（如 .mp4）
-        :param output_path: 输出文件路径（可选，默认同目录同名 .mp3）
-        :return: 生成的 mp3 文件路径
+        将输入视频转换为MP3音频
+        :param input_path: 输入视频文件路径
+        :param output_dir: 输出目录，默认和输入文件同目录
+        :return: 输出的MP3文件路径
         """
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"输入文件不存在: {input_path}")
 
-        if output_path is None:
-            base, _ = os.path.splitext(input_path)
-            output_path = base + ".mp3"
+        if output_dir is None:
+            output_dir = os.path.dirname(input_path)
+
+        # 生成输出文件名
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        output_path = os.path.join(output_dir, f"{base_name}.mp3")
+
+        # 如果MP3文件已存在，直接返回
+        if os.path.exists(output_path):
+            print(f"MP3文件已存在，跳过转换: {output_path}")
+            return output_path
+
         try:
-        # 调用 ffmpeg 转换
+            # 使用 ffmpeg 转换为 MP3
             command = [
                 'ffmpeg',
-                '-i', input_path,
-                '-vn',  # 不要视频流
-                '-acodec', 'libmp3lame',  # 使用mp3编码
+                '-i', input_path,  # 输入文件
+                '-vn',  # 禁用视频流
+                '-acodec', 'libmp3lame',  # 使用MP3编码器
+                '-b:a', '128k',  # 音频比特率
                 '-y',  # 覆盖输出文件
                 output_path
             ]
@@ -80,23 +94,15 @@ class LocalDownloader(Downloader, ABC):
             subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
             if not os.path.exists(output_path):
-                raise RuntimeError(f"mp3 文件生成失败: {output_path}")
+                raise RuntimeError(f"MP3转换失败: {output_path}")
 
+            print(f"MP3转换成功: {input_path} -> {output_path}")
             return output_path
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"mp3 文件生成失败: {output_path}") from e
-    def download_video(self, video_url: str, output_dir: str = None) -> str:
-        """
-        处理本地文件路径，返回视频文件路径
-        """
-        if video_url.startswith('/uploads'):
-            project_root = os.getcwd()
-            video_url = os.path.join(project_root, video_url.lstrip('/'))
-            video_url = os.path.normpath(video_url)
 
-        if not os.path.exists(video_url):
-            raise FileNotFoundError()
-        return video_url
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"ffmpeg 转换失败: {e}")
+
+
     def download(
             self,
             video_url: str,
@@ -116,8 +122,13 @@ class LocalDownloader(Downloader, ABC):
             raise FileNotFoundError(f"本地文件不存在: {video_url}")
 
         file_name = os.path.basename(video_url)
-        title, _ = os.path.splitext(file_name)
-        print(title, file_name,video_url)
+        original_title, _ = os.path.splitext(file_name)
+        
+        # 🧹 清理标题，去掉合集相关字符串
+        cleaned_title = smart_title_clean(original_title, platform="local", preserve_episode=False)
+        logger.info(f"🧹 本地文件标题清理: '{original_title}' -> '{cleaned_title}'")
+        
+        print(cleaned_title, file_name,video_url)
         file_path=self.convert_to_mp3(video_url)
         cover_path = self.extract_cover(video_url)
         cover_url = save_cover_to_static(cover_path)
@@ -125,11 +136,11 @@ class LocalDownloader(Downloader, ABC):
         print('file——path',file_path)
         return AudioDownloadResult(
             file_path=file_path,
-            title=title,
+            title=cleaned_title,  # 使用清理后的标题
             duration=0,  # 可选：后续加上读取时长
             cover_url=cover_url,  # 暂无封面
             platform="local",
-            video_id=title,
+            video_id=cleaned_title,  # 使用清理后的标题作为video_id
             raw_info={
                 'path':  file_path
             },

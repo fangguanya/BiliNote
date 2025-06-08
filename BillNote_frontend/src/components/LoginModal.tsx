@@ -39,6 +39,12 @@ const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, platform, onLo
       color: 'text-orange-500',
       bgColor: 'bg-orange-50',
       borderColor: 'border-orange-200'
+    },
+    baidu_pan: {
+      name: '百度网盘',
+      color: 'text-blue-600',
+      bgColor: 'bg-blue-50',
+      borderColor: 'border-blue-200'
     }
   }
 

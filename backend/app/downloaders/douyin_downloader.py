@@ -18,6 +18,7 @@ from app.utils.path_helper import get_data_dir
 from app.exceptions.auth_exceptions import AuthRequiredException
 from app.utils.logger import get_logger
 from dotenv import load_dotenv
+from app.utils.title_cleaner import smart_title_clean
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -345,9 +346,16 @@ class DouyinDownloader(Downloader):
             if tag['tag_name']:
                 tags.append(tag['tag_name'])
 
+        # 获取原始标题
+        original_title = video_data['aweme_detail']['item_title']
+        
+        # 🧹 清理标题，去掉合集相关字符串
+        cleaned_title = smart_title_clean(original_title, platform="douyin", preserve_episode=False)
+        logger.info(f"🧹 抖音标题清理: '{original_title}' -> '{cleaned_title}'")
+
         return AudioDownloadResult(
             file_path=output_path,
-            title=video_data['aweme_detail']['item_title'],
+            title=cleaned_title,  # 使用清理后的标题
             duration=video_data['aweme_detail']['video']['duration'],
             cover_url=video_data['aweme_detail']['video']['cover_original_scale']['url_list'][0] if
             video_data['aweme_detail']['video']['cover'] else video_data['video']['big_thumbs']['img_url'],
