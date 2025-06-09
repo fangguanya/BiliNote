@@ -10,6 +10,9 @@ import ForceRetryAll from '@/components/ForceRetryAll'
 const History = () => {
   const currentTaskId = useTaskStore(state => state.currentTaskId)
   const setCurrentTask = useTaskStore(state => state.setCurrentTask)
+  const isLoading = useTaskStore(state => state.isLoading)
+  const isInitialized = useTaskStore(state => state.isInitialized)
+  
   return (
     <>
       <div className={'flex h-full w-full flex-col gap-4 px-2.5 py-1.5'}>
@@ -28,9 +31,16 @@ const History = () => {
           </div>
         </div>
         <ScrollArea className="w-full sm:h-[480px] md:h-[720px] lg:h-[92%]">
-          {/*<div className="w-full flex-1 overflow-y-auto">*/}
-          <NoteHistory onSelect={setCurrentTask} selectedId={currentTaskId} />
-          {/*</div>*/}
+          {!isInitialized || isLoading ? (
+            <div className="flex items-center justify-center h-32 text-gray-500">
+              <Loader2 className="w-6 h-6 animate-spin mr-2" />
+              <span>
+                {!isInitialized ? '正在初始化任务数据...' : '正在加载任务...'}
+              </span>
+            </div>
+          ) : (
+            <NoteHistory onSelect={setCurrentTask} selectedId={currentTaskId} />
+          )}
         </ScrollArea>
       </div>
     </>

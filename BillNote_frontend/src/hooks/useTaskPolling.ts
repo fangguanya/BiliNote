@@ -57,11 +57,14 @@ export const useTaskPolling = (interval = 3000) => {
           const res = await get_task_status(task.id)
           const { status } = res.data
 
+          // 只有当状态确实发生变化时才更新
           if (status && status !== task.status) {
+            console.log(`📊 任务 ${task.id} 状态变化: ${task.status} -> ${status}`)
+            
             if (status === 'SUCCESS') {
               const { markdown, transcript, audio_meta } = res.data.result
               toast.success('笔记生成成功')
-              updateTaskContentRef.current(task.id, {
+              await updateTaskContentRef.current(task.id, {
                 status,
                 markdown,
                 transcript,
@@ -82,7 +85,7 @@ export const useTaskPolling = (interval = 3000) => {
                     })
 
                     if (result) {
-                      updateTaskNotionRef.current(task.id, {
+                      await updateTaskNotionRef.current(task.id, {
                         saved: true,
                         pageId: result.page_id,
                         pageUrl: result.url,
@@ -105,16 +108,19 @@ export const useTaskPolling = (interval = 3000) => {
                 }
               }
             } else if (status === 'FAILED') {
-              updateTaskContentRef.current(task.id, { status })
+              await updateTaskContentRef.current(task.id, { status })
               console.warn(`⚠️ 任务 ${task.id} 失败`)
             } else {
-              updateTaskContentRef.current(task.id, { status })
+              // 其他状态变化（如PENDING -> RUNNING）
+              await updateTaskContentRef.current(task.id, { status })
             }
+          } else {
+            console.debug(`⏭️ 任务 ${task.id} 状态无变化 (${task.status})，跳过更新`)
           }
         } catch (e: any) {
           console.error('❌ 任务轮询失败：', e)
           toast.error(`生成失败 ${e.message || e}`)
-          updateTaskContentRef.current(task.id, { status: 'FAILED' })
+          await updateTaskContentRef.current(task.id, { status: 'FAILED' })
           // removeTask(task.id)
         }
       }

@@ -3,6 +3,7 @@ import HomeLayout from '@/layouts/HomeLayout.tsx'
 import NoteForm from '@/pages/HomePage/components/NoteForm.tsx'
 import MarkdownViewer from '@/pages/HomePage/components/MarkdownViewer.tsx'
 import { useTaskStore } from '@/store/taskStore'
+import MigrationNotice from '@/components/MigrationNotice'
 import History from '@/pages/HomePage/components/History.tsx'
 type ViewStatus = 'idle' | 'loading' | 'success' | 'failed'
 export const HomePage: FC = () => {
@@ -35,10 +36,13 @@ export const HomePage: FC = () => {
   //     })
   // }, [tasks]);
   return (
-    <HomeLayout
-      NoteForm={<NoteForm />}
-      Preview={<MarkdownViewer status={status} />}
-      History={<History />}
-    />
+    <>
+      <MigrationNotice />
+      <HomeLayout
+        NoteForm={<NoteForm />}
+        Preview={<MarkdownViewer status={status} content={content} />}
+        History={<History />}
+      />
+    </>
   )
 }

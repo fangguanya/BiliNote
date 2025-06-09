@@ -44,6 +44,10 @@ async def lifespan(app):
     init_provider_table()
     init_model_table()
     
+    # 初始化新的任务表
+    from app.db.task_dao import init_tasks_table
+    init_tasks_table()
+    
     # 启动任务队列
     from app.core.task_queue import task_queue
     task_queue.start()
