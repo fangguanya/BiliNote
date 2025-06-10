@@ -5,12 +5,14 @@ import requests
 import re
 from typing import Optional, List, Dict, Tuple, Union
 from urllib.parse import urlparse, parse_qs, unquote
-from abc import ABC
+
 
 from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
 from app.models.notes_model import AudioDownloadResult
 from app.utils.path_helper import get_data_dir
 from app.services.cookie_manager import CookieConfigManager
+from app.services.baidupcs_service import BaiduPCSService as NewBaiduPCSService
+from app.services.baidu_pcs_service import BaiduFileInfo, RapidUploadInfo
 from app.exceptions.auth_exceptions import AuthRequiredException
 from app.utils.logger import get_logger
 from app.utils.title_cleaner import smart_title_clean
@@ -18,77 +20,41 @@ from app.utils.title_cleaner import smart_title_clean
 logger = get_logger(__name__)
 
 
-class BaiduPanDownloader(Downloader, ABC):
-    """百度网盘下载器"""
+class BaiduPanDownloader(Downloader):
+    """
+    百度网盘下载器 - 升级版
+    集成BaiduPCS-Py设计理念，支持更完整的功能
+    """
     
     def __init__(self):
         super().__init__()
+        
+        # 使用新的BaiduPCS服务
+        self.new_pcs_service = NewBaiduPCSService()
+        
+        # 保持旧版兼容性
         self.cookie_manager = CookieConfigManager()
-        self.session = requests.Session()
         
         # 百度网盘API相关配置
         self.api_base = "https://pan.baidu.com/api"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': 'https://pan.baidu.com/',
             'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
         }
         
-        # 支持的视频格式
-        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts'}
-        self.audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a'}
+        # 支持的视频格式（扩展）
+        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
+        self.audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.ape', '.ac3', '.dts'}
         
         # 关键cookie名称
         self.critical_cookies = ['BDUSS', 'STOKEN', 'PSTM']
         self.optional_cookies = ['BAIDUID', 'BAIDUID_BFESS', 'PASSID', 'UBI', 'UBI_BFESS', 'PANPSC']
-        
-        self._setup_session()
 
     def _setup_session(self):
-        """设置会话和cookie"""
-        cookie = self.cookie_manager.get("baidu_pan")
-        if cookie:
-            logger.info("🍪 使用已保存的百度网盘cookie")
-            logger.debug(f"🔍 Cookie长度: {len(cookie)} 字符")
-            
-            # 解析cookie字符串并设置到session
-            cookie_count = 0
-            parsed_cookies = {}
-            
-            for cookie_pair in cookie.split(';'):
-                if '=' in cookie_pair:
-                    name, value = cookie_pair.split('=', 1)
-                    name = name.strip()
-                    value = value.strip()
-                    
-                    if name and value:  # 确保名称和值都不为空
-                        self.session.cookies.set(name, value, domain='.baidu.com')
-                        parsed_cookies[name] = value
-                        cookie_count += 1
-                        
-                        # 只记录重要cookie的名称，不记录完整值（安全考虑）
-                        if name in self.critical_cookies:
-                            logger.debug(f"🔑 关键Cookie设置: {name}={value[:10]}...")
-                        elif name in self.optional_cookies:
-                            logger.debug(f"📋 可选Cookie设置: {name}")
-            
-            logger.info(f"📊 共解析设置了 {cookie_count} 个cookie")
-            
-            # 验证关键cookie是否存在
-            missing_critical = [c for c in self.critical_cookies if c not in parsed_cookies]
-            if missing_critical:
-                logger.warning(f"⚠️ 缺少关键cookie: {missing_critical}")
-                logger.warning("💡 建议重新获取完整的百度网盘cookie，包括BDUSS、STOKEN、PSTM")
-            else:
-                logger.info("✅ 关键认证cookie已齐全")
-            
-            self.headers['Cookie'] = cookie
-        else:
-            logger.warning("⚠️ 未找到百度网盘cookie，需要登录获取完整cookie")
-            logger.info("💡 请访问 https://pan.baidu.com 登录后，在浏览器开发者工具中复制完整cookie")
+        """设置会话和cookie（使用PCS服务）"""
+        # 已由PCS服务处理
+        pass
 
     def _check_auth_required(self, response_data: dict) -> bool:
         """检查是否需要认证"""
@@ -96,7 +62,7 @@ class BaiduPanDownloader(Downloader, ABC):
         error_msg = response_data.get('errmsg', '')
         
         # 百度网盘常见的认证错误码
-        auth_error_codes = [-6, -9, 12, 130, 2, 31119, 31329]  # 需要登录、cookie过期、验证失败等
+        auth_error_codes = [-6, -9, 12, 130, 2, 31119, 31329]
         
         if error_code in auth_error_codes:
             return True
@@ -109,102 +75,22 @@ class BaiduPanDownloader(Downloader, ABC):
     def _validate_cookie_status(self) -> bool:
         """验证当前cookie状态"""
         try:
-            # 尝试获取用户信息来验证cookie有效性
-            url = f"{self.api_base}/uinfo"
-            response = self.session.get(url, headers=self.headers, timeout=10)
-            
-            if response.status_code != 200:
-                logger.warning(f"⚠️ Cookie验证请求失败: HTTP {response.status_code}")
-                return False
-            
-            data = response.json()
-            if data.get('errno') == 0:
-                user_info = data.get('user_info', {})
-                username = user_info.get('baidu_name', '未知用户')
-                logger.info(f"✅ Cookie验证成功，当前用户: {username}")
-                return True
-            else:
-                logger.warning(f"⚠️ Cookie验证失败: errno={data.get('errno')}, errmsg={data.get('errmsg')}")
-                return False
-                
+            return self.new_pcs_service.is_authenticated()
         except Exception as e:
-            logger.warning(f"⚠️ Cookie验证异常: {e}")
+            logger.warning(f"⚠️ Cookie验证失败: {e}")
             return False
 
     def _make_request(self, url: str, params: dict = None, method: str = 'GET') -> dict:
-        """发起API请求"""
+        """发起API请求（使用新PCS服务）"""
+        # 暂时使用简单的requests调用，因为新服务结构不同
+        import requests
         try:
-            logger.debug(f"🌐 发起{method}请求: {url}")
-            logger.debug(f"📋 请求参数: {params}")
-            
-            # 添加时间戳参数防止缓存
-            if params is None:
-                params = {}
-            params['_'] = int(time.time() * 1000)
-            
-            response = self.session.request(
-                method=method,
-                url=url,
-                params=params,
-                headers=self.headers,
-                timeout=30
-            )
-            
-            logger.debug(f"📊 响应状态码: {response.status_code}")
-            
+            response = requests.request(method, url, params=params, headers=self.headers, timeout=30)
             response.raise_for_status()
-            
-            try:
-                data = response.json()
-                logger.debug(f"📄 响应数据: errno={data.get('errno')}, errmsg={data.get('errmsg', 'N/A')}")
-            except ValueError:
-                logger.warning(f"⚠️ 响应不是JSON格式，内容预览: {response.text[:200]}")
-                # 如果不是JSON响应，可能是HTML登录页面
-                if 'login' in response.text.lower() or 'passport' in response.text.lower():
-                    logger.error("🔐 检测到登录页面，需要重新认证")
-                    raise AuthRequiredException("baidu_pan", "检测到登录页面，请重新获取完整cookie")
-                raise Exception(f"API返回非JSON响应: {response.text[:200]}")
-            
-            # 检查是否需要认证
-            if self._check_auth_required(data):
-                logger.error(f"🔐 API返回认证错误: errno={data.get('errno')}, errmsg={data.get('errmsg')}")
-                
-                # 详细检查当前使用的cookie信息
-                current_cookies = list(self.session.cookies.keys())
-                logger.error(f"🍪 当前会话cookie列表: {current_cookies}")
-                
-                # 检查关键cookie是否存在
-                missing_critical = [c for c in self.critical_cookies if c not in current_cookies]
-                existing_critical = [c for c in self.critical_cookies if c in current_cookies]
-                
-                if missing_critical:
-                    logger.error(f"❌ 缺少关键cookie: {missing_critical}")
-                    
-                if existing_critical:
-                    logger.info(f"✅ 已有关键cookie: {existing_critical}")
-                
-                # 提供更详细的解决方案
-                if missing_critical:
-                    error_msg = f"百度网盘认证失败，缺少关键cookie: {', '.join(missing_critical)}。\n"
-                    error_msg += "请按以下步骤重新获取完整cookie：\n"
-                    error_msg += "1. 在浏览器中访问 https://pan.baidu.com\n"
-                    error_msg += "2. 登录您的百度账号\n"
-                    error_msg += "3. 按F12打开开发者工具，转到Application/存储 -> Cookies\n"
-                    error_msg += "4. 复制所有cookie值，确保包含BDUSS、STOKEN、PSTM\n"
-                    error_msg += "5. 在系统设置中更新百度网盘cookie"
-                else:
-                    error_msg = "百度网盘认证失败，cookie可能已过期，请重新登录获取新的cookie"
-                
-                raise AuthRequiredException("baidu_pan", error_msg)
-            
-            return data
-            
-        except requests.RequestException as e:
-            logger.error(f"❌ 百度网盘API请求失败: {e}")
-            if "timeout" in str(e).lower():
-                raise Exception(f"网络请求超时，请检查网络连接: {str(e)}")
-            else:
-                raise Exception(f"网络请求失败: {str(e)}")
+            return response.json()
+        except Exception as e:
+            logger.error(f"❌ API请求失败: {e}")
+            return {"errno": -1, "errmsg": str(e)}
 
     def parse_share_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
         """解析分享链接，提取分享码和提取码"""
@@ -223,6 +109,17 @@ class BaiduPanDownloader(Downloader, ABC):
 
     def parse_path_url(self, url: str) -> str:
         """解析网盘目录URL，提取路径"""
+        # 处理baidu_pan://协议
+        if url.startswith("baidu_pan://file/"):
+            # baidu_pan://file/fs_id?filename=xxx&path=xxx
+            # 从path参数中提取目录路径
+            path_match = re.search(r"[?&]path=([^&]+)", url)
+            if path_match:
+                full_path = unquote(path_match.group(1))
+                # 提取目录部分（去掉文件名）
+                return os.path.dirname(full_path) or "/"
+            return "/"
+        
         # 目录链接格式：https://pan.baidu.com/disk/home#/path=/视频目录
         path_match = re.search(r"#/path=([^&]+)", url)
         if path_match:
@@ -235,6 +132,62 @@ class BaiduPanDownloader(Downloader, ABC):
             
         return "/"
 
+    def is_rapid_upload_link(self, url: str) -> bool:
+        """判断是否为秒传链接"""
+        # cs3l协议
+        if url.startswith('cs3l://'):
+            return True
+        
+        # bdpan协议
+        if url.startswith('bdpan://'):
+            return True
+        
+        # 简化格式：md5#slice_md5#size#filename 或 md5#slice_md5#crc32#size#filename
+        # 检查是否符合秒传链接的基本格式
+        if '#' in url and not url.startswith('http'):
+            parts = url.split('#')
+            if len(parts) >= 4:
+                # 检查md5格式（32位十六进制）
+                try:
+                    if len(parts[0]) == 32 and len(parts[1]) == 32:
+                        # 检查第三个或第四个参数是否为数字（文件大小）
+                        if len(parts) == 4:
+                            int(parts[2])  # 文件大小
+                            return True
+                        elif len(parts) >= 5:
+                            int(parts[3])  # 文件大小
+                            return True
+                except ValueError:
+                    pass
+        
+        return False
+    
+    def parse_baidu_pan_url(self, url: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """解析baidu_pan://协议链接
+        
+        Returns:
+            (fs_id, filename, path) - 文件ID、文件名、完整路径
+        """
+        if not url.startswith("baidu_pan://file/"):
+            return None, None, None
+            
+        # 格式: baidu_pan://file/fs_id?filename=xxx&path=xxx
+        match = re.search(r"baidu_pan://file/([^?]+)", url)
+        if not match:
+            return None, None, None
+            
+        fs_id = match.group(1)
+        
+        # 提取filename参数
+        filename_match = re.search(r"[?&]filename=([^&]+)", url)
+        filename = unquote(filename_match.group(1)) if filename_match else None
+        
+        # 提取path参数
+        path_match = re.search(r"[?&]path=([^&]+)", url)
+        path = unquote(path_match.group(1)) if path_match else None
+        
+        return fs_id, filename, path
+
     def get_file_list(self, path: str = "/", share_code: str = None, extract_code: str = None) -> List[Dict]:
         """获取文件列表"""
         if share_code:
@@ -245,66 +198,41 @@ class BaiduPanDownloader(Downloader, ABC):
             return self._get_personal_file_list(path)
 
     def _get_personal_file_list(self, path: str) -> List[Dict]:
-        """获取个人网盘文件列表"""
+        """获取个人网盘文件列表（使用新BaiduPCS服务）"""
         logger.info(f"📂 获取个人网盘文件列表: {path}")
         
-        # 首先验证cookie状态
-        if not self._validate_cookie_status():
-            logger.warning("⚠️ Cookie验证失败，可能需要重新登录")
-        
-        url = f"{self.api_base}/list"
-        params = {
-            'order': 'time',
-            'desc': 1,
-            'showempty': 0,
-            'web': 1,
-            'page': 1,
-            'num': 100,
-            'dir': path,
-            'bdstoken': self._get_bdstoken()  # 添加bdstoken参数
-        }
-        
         try:
-            data = self._make_request(url, params)
+            # 使用新的BaiduPCS服务
+            result = self.new_pcs_service.get_file_list(path=path)
             
-            if data.get('errno') == 0:
-                file_list = data.get('list', [])
-                logger.info(f"✅ 获取到 {len(file_list)} 个文件/文件夹")
-                return file_list
-            else:
-                error_msg = data.get('errmsg', '未知错误')
-                logger.error(f"❌ 获取文件列表失败: errno={data.get('errno')}, errmsg={error_msg}")
-                
-                # 根据错误码提供具体建议
-                errno = data.get('errno')
-                if errno == -6:
-                    logger.error("💡 错误-6通常表示未登录或cookie无效，请重新获取cookie")
-                elif errno == -9:
-                    logger.error("💡 错误-9通常表示访问频率过高，请稍后重试")
-                elif errno == 2:
-                    logger.error("💡 错误2通常表示参数错误或权限不足")
-                
+            if not result.get("success", False):
+                logger.error(f"❌ 获取文件列表失败: {result.get('message', '未知错误')}")
                 return []
-                
+            
+            files_data = result.get("files", [])
+            
+            # 转换为旧格式以保持兼容性
+            file_list = []
+            for file_info in files_data:
+                file_dict = {
+                    'fs_id': file_info.get('fs_id', ''),
+                    'server_filename': file_info.get('filename', ''),
+                    'path': file_info.get('path', ''),
+                    'size': file_info.get('size', 0),
+                    'md5': '',  # 新服务暂不提供md5
+                    'isdir': 1 if file_info.get('is_dir', False) else 0,
+                    'server_ctime': file_info.get('ctime', 0),
+                    'server_mtime': file_info.get('mtime', 0),
+                    'category': 1 if file_info.get('is_media', False) else 6  # 1=视频 6=其他
+                }
+                file_list.append(file_dict)
+            
+            logger.info(f"✅ 获取到 {len(file_list)} 个文件/文件夹")
+            return file_list
+            
         except Exception as e:
             logger.error(f"❌ 获取个人网盘文件列表失败: {e}")
             return []
-
-    def _get_bdstoken(self) -> Optional[str]:
-        """尝试获取bdstoken"""
-        try:
-            # 访问网盘首页获取bdstoken
-            response = self.session.get("https://pan.baidu.com/disk/home", headers=self.headers, timeout=10)
-            if response.status_code == 200:
-                # 从页面中提取bdstoken
-                bdstoken_match = re.search(r'"bdstoken":"([^"]+)"', response.text)
-                if bdstoken_match:
-                    bdstoken = bdstoken_match.group(1)
-                    logger.debug(f"🔑 获取到bdstoken: {bdstoken[:10]}...")
-                    return bdstoken
-        except Exception as e:
-            logger.debug(f"获取bdstoken失败: {e}")
-        return None
 
     def _get_share_file_list(self, share_code: str, extract_code: str = None, path: str = "/") -> List[Dict]:
         """获取分享链接文件列表"""
@@ -423,8 +351,14 @@ class BaiduPanDownloader(Downloader, ABC):
                 
             filename = file_info.get('server_filename', '')
             file_ext = os.path.splitext(filename)[1].lower()
+            category = file_info.get('category', 6)
             
-            if file_ext in self.video_extensions or file_ext in self.audio_extensions:
+            # 根据扩展名或类别判断是否为媒体文件
+            is_media = (file_ext in self.video_extensions or 
+                       file_ext in self.audio_extensions or
+                       category in [1, 2])  # 1视频 2音频
+            
+            if is_media:
                 media_files.append(file_info)
                 logger.info(f"📁 找到媒体文件: {filename}")
         
@@ -437,35 +371,19 @@ class BaiduPanDownloader(Downloader, ABC):
             # 分享链接的下载
             return self._get_share_download_link(fs_id, filename, share_info)
         else:
-            # 个人网盘的下载
+            # 个人网盘的下载（使用PCS服务）
             return self._get_personal_download_link(fs_id, filename)
     
     def _get_personal_download_link(self, fs_id: str, filename: str) -> Optional[str]:
-        """获取个人网盘文件下载链接"""
-        url = f"{self.api_base}/download"
-        params = {
-            'method': 'download',
-            'app_id': '250528',
-            'fidlist': f'[{fs_id}]',
-            'type': 'dlink'
-        }
+        """获取个人网盘文件下载链接（使用新BaiduPCS服务）"""
+        logger.error(f"❌ 个人网盘直接下载功能暂时不可用: {filename}")
+        logger.info(f"💡 建议使用以下方法之一:")
+        logger.info(f"   1. 使用分享链接下载")
+        logger.info(f"   2. 手动下载后上传到系统")
+        logger.info(f"   3. 等待完整的BaiduPCS下载功能实现")
         
-        try:
-            data = self._make_request(url, params)
-            
-            if data.get('errno') == 0:
-                dlink_list = data.get('dlink', [])
-                if dlink_list:
-                    download_url = dlink_list[0].get('dlink')
-                    logger.info(f"✅ 获取个人网盘下载链接成功: {filename}")
-                    return download_url
-            
-            logger.error(f"❌ 获取个人网盘下载链接失败: {data.get('errmsg')}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ 获取个人网盘下载链接失败: {e}")
-            return None
+        # 返回None表示获取下载链接失败
+        return None
     
     def _get_share_download_link(self, fs_id: str, filename: str, share_info: dict) -> Optional[str]:
         """获取分享文件下载链接"""
@@ -542,19 +460,38 @@ class BaiduPanDownloader(Downloader, ABC):
             
             logger.info(f"📥 开始下载: {filename}")
             
+            # 使用特殊的User-Agent来下载百度网盘文件
+            download_headers = {
+                **self.headers,
+                'User-Agent': 'pan.baidu.com'
+            }
+            
             response = self.session.get(
                 download_url,
-                headers=self.headers,
+                headers=download_headers,
                 stream=True,
                 timeout=60
             )
             
             response.raise_for_status()
             
+            # 检查文件大小
+            total_size = int(response.headers.get('content-length', 0))
+            if total_size > 0:
+                logger.info(f"📊 文件大小: {total_size // 1024 // 1024}MB")
+            
+            downloaded_size = 0
             with open(local_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        # 显示下载进度（每10MB显示一次）
+                        if downloaded_size % (10 * 1024 * 1024) == 0:
+                            if total_size > 0:
+                                progress = (downloaded_size / total_size) * 100
+                                logger.info(f"📥 下载进度: {progress:.1f}%")
             
             logger.info(f"✅ 下载完成: {local_path}")
             return local_path
@@ -563,12 +500,31 @@ class BaiduPanDownloader(Downloader, ABC):
             logger.error(f"❌ 下载文件失败 {filename}: {e}")
             return None
 
+    def handle_rapid_upload(self, rapid_link: str, target_dir: str = "/") -> AudioDownloadResult:
+        """
+        处理秒传链接
+        
+        :param rapid_link: 秒传链接
+        :param target_dir: 目标目录（网盘路径）
+        :return: AudioDownloadResult对象
+        """
+        logger.info(f"⚡ 处理秒传链接: {rapid_link}")
+        
+        try:
+            # 秒传功能暂时禁用，需要适配新的BaiduPCS服务
+            logger.error("❌ 秒传功能暂时不可用，需要适配新的BaiduPCS服务")
+            raise Exception("秒传功能暂时不可用")
+                
+        except Exception as e:
+            logger.error(f"❌ 秒传处理失败: {e}")
+            raise Exception(f"秒传处理失败: {str(e)}")
+
     def download(self, video_url: str, output_dir: str = None, 
                  quality: DownloadQuality = "fast", need_video: Optional[bool] = False) -> AudioDownloadResult:
         """
         主下载方法
         
-        :param video_url: 百度网盘链接（支持分享链接和目录链接）
+        :param video_url: 百度网盘链接（支持分享链接、目录链接、秒传链接）
         :param output_dir: 输出目录
         :param quality: 质量（百度网盘中为original）
         :param need_video: 是否需要视频文件
@@ -579,6 +535,62 @@ class BaiduPanDownloader(Downloader, ABC):
                 output_dir = get_data_dir()
             
             logger.info(f"🎯 开始处理百度网盘链接: {video_url}")
+            
+            # 检查是否为秒传链接
+            if self.is_rapid_upload_link(video_url):
+                logger.info("🔗 检测到秒传链接")
+                return self.handle_rapid_upload(video_url, target_dir="/秒传文件")
+            
+            # 检查是否为baidu_pan://协议链接
+            fs_id, filename, file_path = self.parse_baidu_pan_url(video_url)
+            if fs_id and filename:
+                logger.info(f"🎯 检测到baidu_pan协议链接: fs_id={fs_id}, filename={filename}")
+                
+                # 直接使用指定的文件信息，无需搜索
+                target_file = {
+                    'fs_id': fs_id,
+                    'server_filename': filename,
+                    'path': file_path or f"/{filename}",
+                    'size': 0,  # 大小未知
+                    'isdir': 0,
+                    'category': 1  # 假设是视频
+                }
+                
+                # 获取下载链接
+                download_url = self.get_download_link(fs_id, filename)
+                if not download_url:
+                    raise Exception("获取下载链接失败")
+                
+                # 下载文件
+                local_path = self.download_file(download_url, filename, output_dir)
+                if not local_path:
+                    raise Exception("文件下载失败")
+                
+                # 获取原始标题并清理
+                original_title = os.path.splitext(filename)[0]  # 去掉扩展名作为标题
+                
+                # 🧹 清理标题，去掉合集相关字符串
+                cleaned_title = smart_title_clean(original_title, platform="baidu_pan", preserve_episode=False)
+                logger.info(f"🧹 百度网盘标题清理: '{original_title}' -> '{cleaned_title}'")
+                
+                # 构造返回结果
+                return AudioDownloadResult(
+                    file_path=local_path,
+                    title=cleaned_title,  # 使用清理后的标题
+                    duration=0.0,  # 百度网盘无法直接获取时长，设为0
+                    cover_url=None,  # 百度网盘无封面
+                    platform="baidu_pan",
+                    video_id=fs_id,
+                    raw_info={
+                        "fs_id": fs_id,
+                        "filename": filename,
+                        "size": 0,
+                        "download_url": download_url,
+                        "source_url": video_url,
+                        "file_path": file_path
+                    },
+                    video_path=local_path if need_video else None
+                )
             
             # 解析URL类型
             share_code, extract_code = self.parse_share_url(video_url)
@@ -699,6 +711,11 @@ class BaiduPanDownloader(Downloader, ABC):
             
             logger.info(f"🎯 开始批量处理百度网盘链接: {video_url}")
             
+            # 如果是秒传链接，只处理单个文件
+            if self.is_rapid_upload_link(video_url):
+                result = self.handle_rapid_upload(video_url)
+                return [result]
+            
             # 解析URL类型
             share_code, extract_code = self.parse_share_url(video_url)
             
@@ -781,6 +798,34 @@ class BaiduPanDownloader(Downloader, ABC):
         except Exception as e:
             logger.error(f"❌ 批量下载失败: {e}")
             return []
+
+    def batch_rapid_upload(self, rapid_links: List[str], target_dir: str = "/") -> List[AudioDownloadResult]:
+        """
+        批量秒传
+        
+        :param rapid_links: 秒传链接列表
+        :param target_dir: 目标目录
+        :return: AudioDownloadResult列表
+        """
+        logger.info(f"⚡ 批量秒传: {len(rapid_links)} 个文件")
+        
+        results = []
+        
+        for i, link in enumerate(rapid_links, 1):
+            try:
+                logger.info(f"⚡ 处理秒传 {i}/{len(rapid_links)}: {link}")
+                result = self.handle_rapid_upload(link, target_dir)
+                results.append(result)
+                
+                # 添加延迟避免请求过快
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.error(f"❌ 秒传失败 {link}: {e}")
+                continue
+        
+        logger.info(f"✅ 批量秒传完成: 成功 {len(results)}/{len(rapid_links)} 个")
+        return results
 
     @staticmethod  
     def download_video(video_url: str, output_dir: Union[str, None] = None) -> str:

@@ -10,9 +10,15 @@ import { getDownloaderCookie } from '@/services/downloader'
 import { getCookieStatus, clearPlatformCookie } from '@/services/auth'
 import { videoPlatforms } from '@/constant/note.ts'
 import LoginModal from '@/components/LoginModal'
+import BaiduPanForm from './BaiduPanForm'
 
 const DownloaderForm = () => {
   const { id } = useParams()
+
+  // 如果是百度网盘，使用专用组件
+  if (id === 'baidu_pan') {
+    return <BaiduPanForm />
+  }
   const [loading, setLoading] = useState(true)
   const [cookieExists, setCookieExists] = useState(false)
   const [cookiePreview, setCookiePreview] = useState('')

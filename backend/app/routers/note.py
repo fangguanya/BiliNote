@@ -1864,85 +1864,42 @@ def batch_clear_reset_tasks(request: BatchClearResetRequest):
 
 @router.get("/baidu_pan/file_list")
 def get_baidu_pan_file_list(path: str = "/", share_code: str = None, extract_code: str = None):
-    """获取百度网盘文件列表"""
+    """获取百度网盘文件列表 - 使用BaiduPCS-Py"""
     try:
-        from app.downloaders.baidu_pan_downloader import BaiduPanDownloader
+        from app.downloaders.baidupcs_downloader import BaiduPCSDownloader
         
         logger.info(f"🗂️ 获取百度网盘文件列表: path={path}, share_code={share_code}")
         
-        downloader = BaiduPanDownloader()
+        downloader = BaiduPCSDownloader()
+        
+        # 检查认证状态
+        if not downloader.is_authenticated():
+            return R.error("百度网盘未认证，请先添加用户", code=401)
         
         # 获取文件列表
         try:
             file_list = downloader.get_file_list(path=path, share_code=share_code, extract_code=extract_code)
         except Exception as download_error:
-            if "认证" in str(download_error) or "登录" in str(download_error):
-                logger.warning(f"⚠️ 百度网盘认证失败: {download_error}")
-                
-                # 自动清除无效的cookie
-                try:
-                    from app.services.cookie_manager import CookieConfigManager
-                    cookie_manager = CookieConfigManager()
-                    cookie_manager.delete("baidu_pan")
-                    logger.info("🗑️ 已自动清除无效的百度网盘cookie")
-                except Exception as clear_error:
-                    logger.warning(f"⚠️ 清除无效cookie失败: {clear_error}")
-                
-                return R.error("百度网盘认证已过期，请重新登录", code=401)
-            else:
-                logger.error(f"❌ 获取百度网盘文件列表失败: {download_error}")
-                return R.error(f"获取文件列表失败: {str(download_error)}", code=500)
+            logger.error(f"❌ 获取百度网盘文件列表失败: {download_error}")
+            return R.error(f"获取文件列表失败: {str(download_error)}", code=500)
         
         if not file_list:
             logger.warning("⚠️ 未找到任何文件")
             return R.success({
                 "files": [],
                 "total": 0,
+                "media_count": 0,
                 "message": "当前目录为空"
             })
         
-        # 处理文件列表，标记媒体文件
-        processed_files = []
-        media_count = 0
+        # 计算媒体文件数量
+        media_count = sum(1 for f in file_list if f.get("is_media", False))
         
-        for file_info in file_list:
-            is_dir = file_info.get('isdir', 0) == 1
-            filename = file_info.get('server_filename', '')
-            file_size = file_info.get('size', 0)
-            fs_id = str(file_info.get('fs_id', ''))
-            ctime = file_info.get('ctime', 0)
-            
-            # 检查是否为媒体文件
-            is_media = False
-            if not is_dir:
-                file_ext = os.path.splitext(filename)[1].lower()
-                video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts'}
-                audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a'}
-                is_media = file_ext in video_extensions or file_ext in audio_extensions
-                if is_media:
-                    media_count += 1
-            
-            processed_file = {
-                "fs_id": fs_id,
-                "filename": filename,
-                "is_dir": is_dir,
-                "is_media": is_media,
-                "size": file_size,
-                "size_readable": format_file_size(file_size),
-                "ctime": ctime,
-                "path": f"{path.rstrip('/')}/{filename}" if path != "/" else f"/{filename}"
-            }
-            
-            processed_files.append(processed_file)
-        
-        # 排序：文件夹在前，然后按名称排序
-        processed_files.sort(key=lambda x: (not x["is_dir"], x["filename"]))
-        
-        logger.info(f"✅ 获取文件列表成功: 总计 {len(processed_files)} 个项目，其中 {media_count} 个媒体文件")
+        logger.info(f"✅ 获取文件列表成功: 总计 {len(file_list)} 个项目，其中 {media_count} 个媒体文件")
         
         return R.success({
-            "files": processed_files,
-            "total": len(processed_files),
+            "files": file_list,
+            "total": len(file_list),
             "media_count": media_count,
             "current_path": path
         })
@@ -2053,142 +2010,41 @@ def select_baidu_pan_files(request: dict):
 
 @router.get("/baidu_pan/auth_status")
 def get_baidu_pan_auth_status():
-    """检查百度网盘认证状态"""
+    """检查百度网盘认证状态 - 使用BaiduPCS-Py"""
     try:
-        from app.services.cookie_manager import CookieConfigManager
+        from app.downloaders.baidupcs_downloader import BaiduPCSDownloader
         
-        cookie_manager = CookieConfigManager()
-        cookie = cookie_manager.get("baidu_pan")
+        downloader = BaiduPCSDownloader()
+        is_authenticated = downloader.is_authenticated()
         
-        if cookie:
-            # 解析cookie验证关键参数
-            critical_cookies = ['BDUSS', 'STOKEN', 'PSTM']
-            optional_cookies = ['BAIDUID', 'BAIDUID_BFESS', 'PASSID', 'UBI', 'UBI_BFESS', 'PANPSC']
-            
-            parsed_cookies = {}
-            for cookie_pair in cookie.split(';'):
-                if '=' in cookie_pair:
-                    name, value = cookie_pair.split('=', 1)
-                    name = name.strip()
-                    value = value.strip()
-                    if name and value:
-                        parsed_cookies[name] = value
-            
-            # 检查关键cookie是否存在
-            missing_critical = [c for c in critical_cookies if c not in parsed_cookies]
-            existing_critical = [c for c in critical_cookies if c in parsed_cookies]
-            existing_optional = [c for c in optional_cookies if c in parsed_cookies]
-            
-            # 尝试验证cookie有效性
-            try:
-                from app.downloaders.baidu_pan_downloader import BaiduPanDownloader
-                downloader = BaiduPanDownloader()
-                
-                # 尝试获取根目录文件列表来验证认证
-                file_list = downloader.get_file_list("/")
-                
-                return R.success({
-                    "authenticated": True,
-                    "message": "百度网盘已认证",
-                    "cookie_exists": True,
-                    "critical_cookies": {
-                        "required": critical_cookies,
-                        "missing": missing_critical,
-                        "existing": existing_critical
-                    },
-                    "optional_cookies": existing_optional,
-                    "cookie_quality": "excellent" if not missing_critical else "poor",
-                    "validation_success": True
-                })
-                
-            except Exception as e:
-                logger.warning(f"⚠️ 百度网盘认证验证失败: {e}")
-                
-                error_msg = str(e)
-                if "认证" in error_msg or "登录" in error_msg or "cookie" in error_msg.lower():
-                    # 自动清除无效的cookie
-                    try:
-                        cookie_manager.delete("baidu_pan")
-                        logger.info("🗑️ 已自动清除无效的百度网盘cookie")
-                    except Exception as clear_error:
-                        logger.warning(f"⚠️ 清除无效cookie失败: {clear_error}")
-                    
-                    return R.success({
-                        "authenticated": False,
-                        "message": "百度网盘认证已过期或无效，cookie已自动清除",
-                        "cookie_exists": False,
-                        "critical_cookies": {
-                            "required": critical_cookies,
-                            "missing": missing_critical,
-                            "existing": existing_critical
-                        },
-                        "optional_cookies": existing_optional,
-                        "cookie_quality": "invalid",
-                        "validation_success": False,
-                        "error_details": error_msg,
-                        "setup_guide": {
-                            "steps": [
-                                "1. 在浏览器中访问 https://pan.baidu.com",
-                                "2. 登录您的百度账号",
-                                "3. 按F12打开开发者工具",
-                                "4. 转到 Application/应用 -> Storage/存储 -> Cookies",
-                                "5. 选择 https://pan.baidu.com",
-                                "6. 复制所有cookie值（特别是BDUSS、STOKEN、PSTM）",
-                                "7. 格式如：BDUSS=xxx; STOKEN=xxx; PSTM=xxx; ...",
-                                "8. 在本系统中粘贴完整cookie字符串"
-                            ],
-                            "required_cookies": critical_cookies,
-                            "tips": [
-                                "确保复制完整的cookie字符串，包含所有字段",
-                                "cookie中必须包含BDUSS、STOKEN、PSTM这三个关键字段",
-                                "如果登录后仍然失败，请尝试刷新页面后重新复制cookie"
-                            ]
-                        }
-                    })
-                else:
-                    return R.success({
-                        "authenticated": False,
-                        "message": f"百度网盘认证验证失败: {str(e)}",
-                        "cookie_exists": True,
-                        "critical_cookies": {
-                            "required": critical_cookies,
-                            "missing": missing_critical,
-                            "existing": existing_critical
-                        },
-                        "optional_cookies": existing_optional,
-                        "cookie_quality": "poor" if missing_critical else "unknown",
-                        "validation_success": False,
-                        "error_details": str(e)
-                    })
+        if is_authenticated:
+            user_info = downloader.get_current_user_info()
+            return R.success({
+                "authenticated": True,
+                "message": "百度网盘已认证",
+                "user_info": user_info,
+                "validation_success": True
+            })
         else:
             return R.success({
                 "authenticated": False,
-                "message": "未登录百度网盘",
-                "cookie_exists": False,
-                "critical_cookies": {
-                    "required": ['BDUSS', 'STOKEN', 'PSTM'],
-                    "missing": ['BDUSS', 'STOKEN', 'PSTM'],
-                    "existing": []
-                },
-                "optional_cookies": [],
-                "cookie_quality": "none",
+                "message": "未认证，请使用BaiduPCS-Py添加用户",
                 "validation_success": False,
                 "setup_guide": {
                     "steps": [
                         "1. 在浏览器中访问 https://pan.baidu.com",
-                        "2. 登录您的百度账号",
+                        "2. 登录您的百度账号", 
                         "3. 按F12打开开发者工具",
-                        "4. 转到 Application/应用 -> Storage/存储 -> Cookies", 
+                        "4. 转到 Application/应用 -> Storage/存储 -> Cookies",
                         "5. 选择 https://pan.baidu.com",
-                        "6. 复制所有cookie值（特别是BDUSS、STOKEN、PSTM）",
-                        "7. 格式如：BDUSS=xxx; STOKEN=xxx; PSTM=xxx; ...",
-                        "8. 在本系统中粘贴完整cookie字符串"
+                        "6. 复制所有cookie值（特别是BDUSS）",
+                        "7. 调用 /api/baidupcs/add_user 接口添加用户"
                     ],
-                    "required_cookies": ['BDUSS', 'STOKEN', 'PSTM'],
+                    "required_cookies": ["BDUSS"],
                     "tips": [
-                        "确保复制完整的cookie字符串，包含所有字段",
-                        "cookie中必须包含BDUSS、STOKEN、PSTM这三个关键字段",
-                        "如果登录后仍然失败，请尝试刷新页面后重新复制cookie"
+                        "确保复制完整的cookie字符串",
+                        "cookie中必须包含BDUSS字段",
+                        "使用新的BaiduPCS-Py接口进行认证管理"
                     ]
                 }
             })
@@ -2197,9 +2053,11 @@ def get_baidu_pan_auth_status():
         logger.error(f"❌ 检查百度网盘认证状态失败: {e}")
         return R.error(f"检查认证状态失败: {str(e)}")
 
-@router.post("/baidu_pan/validate_cookie")
+# @router.post("/baidu_pan/validate_cookie")
+# 注意：此路由已废弃，请使用新的BaiduPCS-Py接口
+# 新接口: GET /api/baidupcs/auth_status
 def validate_baidu_pan_cookie(request: dict):
-    """验证百度网盘cookie有效性"""
+    """验证百度网盘cookie有效性 - 已废弃"""
     try:
         cookie_string = request.get("cookie", "").strip()
         
@@ -2280,7 +2138,9 @@ def validate_baidu_pan_cookie(request: dict):
         logger.error(f"❌ 验证百度网盘cookie失败: {e}")
         return R.error(f"验证cookie失败: {str(e)}")
 
-@router.get("/baidu_pan/cookie_guide")
+# @router.get("/baidu_pan/cookie_guide")  
+# 注意：此路由已废弃，请使用新的BaiduPCS-Py接口
+# 新接口: GET /api/baidupcs/usage_guide
 def get_baidu_pan_cookie_guide():
     """获取百度网盘cookie获取指南"""
     try:
@@ -2408,9 +2268,11 @@ def get_baidu_pan_cookie_guide():
         logger.error(f"❌ 获取cookie指南失败: {e}")
         return R.error(f"获取cookie指南失败: {str(e)}")
 
-@router.post("/baidu_pan/save_cookie")
+# @router.post("/baidu_pan/save_cookie")
+# 注意：此路由已废弃，请使用新的BaiduPCS-Py接口  
+# 新接口: POST /api/baidupcs/add_user
 def save_baidu_pan_cookie(request: dict):
-    """保存百度网盘cookie"""
+    """保存百度网盘cookie - 已废弃"""
     try:
         cookie_string = request.get("cookie", "").strip()
         
@@ -2494,9 +2356,11 @@ def save_baidu_pan_cookie(request: dict):
         logger.error(f"❌ 保存百度网盘cookie失败: {e}")
         return R.error(f"保存cookie失败: {str(e)}")
 
-@router.delete("/baidu_pan/clear_cookie")
+# @router.delete("/baidu_pan/clear_cookie")
+# 注意：此路由已废弃，请使用新的BaiduPCS-Py接口
+# 新接口: POST /api/baidupcs/remove_user  
 def clear_baidu_pan_cookie():
-    """清除百度网盘cookie"""
+    """清除百度网盘cookie - 已废弃"""
     try:
         from app.services.cookie_manager import CookieConfigManager
         

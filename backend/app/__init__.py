@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from .routers import note, provider, model, config, auth, notion
+from .routers import note, provider, model, config, auth, notion, baidu_pan, baidupcs
 from .utils.response import ResponseWrapper as R
 
 
@@ -23,4 +23,6 @@ def create_app(lifespan=None) -> FastAPI:
     app.include_router(config.router,  prefix="/api")
     app.include_router(auth.router, prefix="/api")
     app.include_router(notion.router, prefix="/api/notion")
+    app.include_router(baidu_pan.router, prefix="/api")
+    app.include_router(baidupcs.router, prefix="/api")
     return app

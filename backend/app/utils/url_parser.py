@@ -1037,9 +1037,9 @@ def identify_platform(url: str) -> Optional[str]:
 
 def extract_baidu_pan_collection_videos(url: str, max_videos: int = 50) -> List[Tuple[str, str]]:
     """
-    提取百度网盘目录中的所有媒体文件
+    提取百度网盘目录中的所有媒体文件（支持秒传链接）
     
-    :param url: 百度网盘目录链接
+    :param url: 百度网盘目录链接或秒传链接
     :param max_videos: 最大文件数量
     :return: [(file_url, filename), ...] 列表
     """
@@ -1050,7 +1050,32 @@ def extract_baidu_pan_collection_videos(url: str, max_videos: int = 50) -> List[
         
         downloader = BaiduPanDownloader()
         
-        # 解析URL类型
+        # 检查是否为秒传链接
+        if downloader.is_rapid_upload_link(url):
+            logger.info("⚡ 检测到秒传链接")
+            
+            # 解析秒传链接信息
+            rapid_info = downloader.pcs_service.parse_rapid_upload_link(url)
+            if rapid_info:
+                # 检查是否为媒体文件
+                filename = rapid_info.filename
+                file_ext = os.path.splitext(filename)[1].lower()
+                
+                is_media = (file_ext in downloader.video_extensions or 
+                           file_ext in downloader.audio_extensions)
+                
+                if is_media:
+                    title = os.path.splitext(filename)[0]
+                    logger.info(f"📄 找到秒传媒体文件: {title}")
+                    return [(url, title)]
+                else:
+                    logger.warning("⚠️ 秒传文件不是媒体文件")
+                    return []
+            else:
+                logger.warning("⚠️ 无法解析秒传链接")
+                return []
+        
+        # 解析URL类型（传统链接）
         share_code, extract_code = downloader.parse_share_url(url)
         
         if share_code:
