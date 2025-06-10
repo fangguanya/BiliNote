@@ -197,8 +197,8 @@ class NotionService:
                     }
                 }]
             
-            # 创建页面
-            response = self.client.pages.create(
+            # 分批创建页面和内容
+            response = self._create_page_with_batched_children(
                 parent={"database_id": database_id},
                 properties=properties,
                 children=children
@@ -268,8 +268,8 @@ class NotionService:
                     }
                 }]
             
-            # 创建页面
-            response = self.client.pages.create(
+            # 分批创建页面和内容
+            response = self._create_page_with_batched_children(
                 parent=parent,
                 properties=properties,
                 children=children
@@ -290,6 +290,75 @@ class NotionService:
                 "error": str(e)
             }
     
+    def _create_page_with_batched_children(self, parent: Dict[str, Any], properties: Dict[str, Any], children: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        分批创建页面和内容，避免Notion API的100个children限制
+        
+        Args:
+            parent: 父页面信息
+            properties: 页面属性
+            children: 子内容块列表
+            
+        Returns:
+            Dict: 创建结果
+        """
+        try:
+            # Notion API限制单次请求最多100个children
+            max_children_per_request = 95  # 留一些余量
+            
+            if len(children) <= max_children_per_request:
+                # 如果内容不多，直接创建
+                response = self.client.pages.create(
+                    parent=parent,
+                    properties=properties,
+                    children=children
+                )
+                logger.info(f"✅ 直接创建页面，包含 {len(children)} 个内容块")
+                return response
+            
+            # 内容过多，需要分批处理
+            logger.info(f"📦 内容块过多 ({len(children)} 个)，将分批上传")
+            
+            # 第1步：创建页面，只包含前95个内容块
+            initial_children = children[:max_children_per_request]
+            remaining_children = children[max_children_per_request:]
+            
+            response = self.client.pages.create(
+                parent=parent,
+                properties=properties,
+                children=initial_children
+            )
+            
+            page_id = response["id"]
+            logger.info(f"✅ 成功创建页面 {page_id}，已添加 {len(initial_children)} 个内容块")
+            
+            # 第2步：分批添加剩余内容
+            batch_count = 0
+            while remaining_children:
+                batch_count += 1
+                # 取下一批内容
+                current_batch = remaining_children[:max_children_per_request]
+                remaining_children = remaining_children[max_children_per_request:]
+                
+                # 添加到页面
+                try:
+                    self.client.blocks.children.append(
+                        block_id=page_id,
+                        children=current_batch
+                    )
+                    logger.info(f"✅ 批次 {batch_count}：成功添加 {len(current_batch)} 个内容块")
+                except Exception as batch_error:
+                    logger.error(f"❌ 批次 {batch_count} 添加失败: {batch_error}")
+                    # 即使某个批次失败，也继续处理其他批次
+                    continue
+            
+            logger.info(f"🎉 分批上传完成，页面 {page_id} 总共包含 {len(children)} 个内容块")
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ 分批创建页面失败: {e}")
+            raise e
+
     def _extract_title(self, title_array: List[Dict]) -> str:
         """
         从Notion标题数组中提取文本
@@ -545,7 +614,7 @@ class NotionService:
             List[Dict]: Notion块列表
         """
         # 限制markdown长度，防止处理过大的内容
-        max_markdown_length = 100000  # 100KB
+        max_markdown_length = 1000000
         if len(markdown) > max_markdown_length:
             logger.warning(f"⚠️ Markdown内容过长 ({len(markdown)} 字符)，截断到 {max_markdown_length} 字符")
             markdown = markdown[:max_markdown_length] + "\n\n[内容已截断...]"
@@ -556,7 +625,7 @@ class NotionService:
         i = 0
         
         # 限制总行数，防止处理过多行
-        max_lines = 5000
+        max_lines = 50000
         if len(lines) > max_lines:
             logger.warning(f"⚠️ Markdown行数过多 ({len(lines)} 行)，截断到 {max_lines} 行")
             lines = lines[:max_lines] + ["", "[内容已截断...]"]
@@ -782,7 +851,66 @@ class NotionService:
         if current_paragraph:
             blocks.append(self._create_paragraph_block('\n'.join(current_paragraph)))
         
+        # 检查和优化块数量
+        if len(blocks) > 300:  # 如果块数过多，进行合并优化
+            logger.warning(f"⚠️ 生成的块数过多 ({len(blocks)} 个)，进行合并优化")
+            blocks = self._optimize_blocks_count(blocks)
+            logger.info(f"📦 优化后的块数: {len(blocks)} 个")
+        
         return blocks
+    
+    def _optimize_blocks_count(self, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        优化块数量，合并相邻的相同类型段落块
+        
+        Args:
+            blocks: 原始块列表
+            
+        Returns:
+            List[Dict]: 优化后的块列表
+        """
+        if not blocks:
+            return blocks
+        
+        optimized_blocks = []
+        current_paragraph_texts = []
+        
+        for block in blocks:
+            block_type = block.get("type", "")
+            
+            # 对于段落块，尝试合并
+            if block_type == "paragraph":
+                # 提取段落文本
+                rich_text = block.get("paragraph", {}).get("rich_text", [])
+                paragraph_text = ""
+                for rt in rich_text:
+                    if rt.get("type") == "text":
+                        paragraph_text += rt.get("text", {}).get("content", "")
+                
+                if paragraph_text.strip():
+                    current_paragraph_texts.append(paragraph_text)
+                    
+                # 如果累积的段落过多，先输出一部分
+                if len(current_paragraph_texts) >= 5:
+                    combined_text = "\n\n".join(current_paragraph_texts)
+                    optimized_blocks.append(self._create_paragraph_block(combined_text))
+                    current_paragraph_texts = []
+            else:
+                # 非段落块，先输出累积的段落
+                if current_paragraph_texts:
+                    combined_text = "\n\n".join(current_paragraph_texts)
+                    optimized_blocks.append(self._create_paragraph_block(combined_text))
+                    current_paragraph_texts = []
+                
+                # 保留非段落块
+                optimized_blocks.append(block)
+        
+        # 处理最后剩余的段落
+        if current_paragraph_texts:
+            combined_text = "\n\n".join(current_paragraph_texts)
+            optimized_blocks.append(self._create_paragraph_block(combined_text))
+        
+        return optimized_blocks
     
     def _create_paragraph_block(self, text: str) -> Dict[str, Any]:
         """创建段落块，支持链接解析"""
