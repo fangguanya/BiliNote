@@ -1046,7 +1046,7 @@ def extract_baidu_pan_collection_videos(url: str, max_videos: int = 50) -> List[
     logger.info(f"☁️ 开始提取百度网盘媒体文件: {url}")
     
     try:
-        from app.downloaders.baidu_pan_downloader import BaiduPanDownloader
+        from app.downloaders.baidupcs_downloader import BaiduPanDownloader
         
         downloader = BaiduPanDownloader()
         

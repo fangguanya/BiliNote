@@ -69,27 +69,40 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   const checkAuthStatus = async () => {
     setAuthLoading(true)
     try {
+      console.log('🔍 开始检查认证状态')
       const result = await getBaiduPanAuthStatus()
-      if (result.code === 0) {
-        setAuthenticated(result.data.authenticated)
-        if (result.data.authenticated) {
+      console.log('📋 认证状态结果:', result)
+      
+      if (result && result.code === 0) {
+        const isAuth = result.data?.authenticated || false
+        setAuthenticated(isAuth)
+        console.log(`🔐 认证状态: ${isAuth}`)
+        
+        if (isAuth) {
+          console.log('✅ 已认证，开始加载文件列表')
           await loadFiles('/')
         } else {
           // 认证失败，清空文件列表
+          console.log('❌ 未认证，清空文件列表')
           setFiles([])
           setMediaCount(0)
-          // 不在这里自动开始登录，让用户手动点击登录按钮
         }
       } else {
+        console.warn('⚠️ 认证状态检查返回异常结果:', result)
         setAuthenticated(false)
         setFiles([])
         setMediaCount(0)
+        if (result?.message) {
+          toast.error(`认证检查失败: ${result.message}`)
+        }
       }
-    } catch (error) {
-      console.error('检查认证状态失败:', error)
+    } catch (error: any) {
+      console.error('❌ 检查认证状态失败:', error)
       setAuthenticated(false)
       setFiles([])
       setMediaCount(0)
+      const errorMessage = error.response?.data?.message || error.message || '未知错误'
+      toast.error(`认证状态检查失败: ${errorMessage}`)
     } finally {
       setAuthLoading(false)
     }
@@ -99,12 +112,23 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   const loadFiles = async (path: string) => {
     setLoading(true)
     try {
+      console.log('🗂️ 开始加载文件列表:', path)
       const result = await getBaiduPanFileList(path)
-      setFiles(result.files || [])
-      setMediaCount(result.media_count || 0)
-      setCurrentPath(path)
+      console.log('📋 文件列表结果:', result)
+      
+      if (result && result.files) {
+        setFiles(result.files)
+        setMediaCount(result.media_count || 0)
+        setCurrentPath(path)
+        console.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件`)
+      } else {
+        console.warn('⚠️ 文件列表结果格式异常:', result)
+        setFiles([])
+        setMediaCount(0)
+        toast.error('文件列表格式异常')
+      }
     } catch (error: any) {
-      console.error('加载文件列表失败:', error)
+      console.error('❌ 加载文件列表失败:', error)
       
       // 检查是否是认证错误
       if (error.response?.status === 401 || 
@@ -113,8 +137,11 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
         setAuthenticated(false)
         toast.error('百度网盘认证已过期，请重新登录')
       } else {
-        toast.error('加载文件列表失败')
+        const errorMessage = error.response?.data?.message || error.message || '未知错误'
+        toast.error(`加载文件列表失败: ${errorMessage}`)
       }
+      setFiles([])
+      setMediaCount(0)
     } finally {
       setLoading(false)
     }
@@ -145,13 +172,28 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
 
   // 切换文件选择
   const toggleFileSelection = (file: BaiduPanFile) => {
-    if (!file.is_media) return // 只能选择媒体文件
+    console.log('🎯 尝试切换文件选择:', file.filename, 'is_media:', file.is_media)
+    
+    if (!file.is_media) {
+      console.log('⚠️ 非媒体文件，跳过选择:', file.filename)
+      return // 只能选择媒体文件
+    }
     
     const isSelected = selectedFiles.some(f => f.fs_id === file.fs_id)
+    console.log(`🔄 文件选择状态变化: ${file.filename} ${isSelected ? '取消选择' : '选择'}`)
+    
     if (isSelected) {
-      setSelectedFiles(prev => prev.filter(f => f.fs_id !== file.fs_id))
+      setSelectedFiles(prev => {
+        const newFiles = prev.filter(f => f.fs_id !== file.fs_id)
+        console.log('📤 更新选择列表，移除文件，当前选择数量:', newFiles.length)
+        return newFiles
+      })
     } else {
-      setSelectedFiles(prev => [...prev, file])
+      setSelectedFiles(prev => {
+        const newFiles = [...prev, file]
+        console.log('📥 更新选择列表，添加文件，当前选择数量:', newFiles.length)
+        return newFiles
+      })
     }
   }
 
@@ -381,9 +423,19 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
               <Button
                 onClick={startBaiduPanLogin}
                 className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700"
+                disabled={loginChecking}
               >
-                <BaiduPanLogo />
-                登录百度网盘
+                {loginChecking ? (
+                  <>
+                    <LoaderIcon className="w-4 h-4 animate-spin" />
+                    登录中...
+                  </>
+                ) : (
+                  <>
+                    <BaiduPanLogo />
+                    登录百度网盘
+                  </>
+                )}
               </Button>
               
               <div className="mt-4 text-xs text-gray-500">
@@ -487,7 +539,10 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                             {file.is_media && !file.is_dir && (
                               <Checkbox
                                 checked={selectedFiles.some(sf => sf.fs_id === file.fs_id)}
-                                onChange={() => toggleFileSelection(file)}
+                                onCheckedChange={(checked) => {
+                                  console.log('🔲 Checkbox状态变化:', file.filename, checked)
+                                  toggleFileSelection(file)
+                                }}
                                 onClick={(e) => e.stopPropagation()}
                               />
                             )}
@@ -501,7 +556,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                               
                               <div className="flex items-center gap-4 text-xs text-gray-500 mt-1">
                                 {!file.is_dir && (
-                                  <span>{file.size_readable}</span>
+                                  <span>{file.size_readable || '未知大小'}</span>
                                 )}
                                 <span>{formatTime(file.ctime)}</span>
                                 

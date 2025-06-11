@@ -2,121 +2,126 @@
 # -*- coding: utf-8 -*-
 
 """
-基于BaiduPCS-Py的百度网盘下载器
-完全使用BaiduPCS-Py的用户管理和文件操作功能
+统一的百度网盘下载器
+基于BaiduPCS-Py命令行工具，支持baidu_pan://协议
 """
 
 import os
-import tempfile
-import subprocess
-import json
-from typing import Optional, List, Dict, Tuple, Union
+import re
+from typing import Optional, List, Dict, Union, Tuple
 from pathlib import Path
-
+from urllib.parse import unquote
 
 from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
 from app.models.notes_model import AudioDownloadResult
-from app.services.baidupcs_service import BaiduPCSService, BaiduPCSFile
+from app.services.baidupcs_service import baidupcs_service
 from app.exceptions.auth_exceptions import AuthRequiredException
 from app.utils.logger import get_logger
 from app.utils.title_cleaner import smart_title_clean
+from app.utils.path_helper import get_data_dir
 
 logger = get_logger(__name__)
 
 
 class BaiduPCSDownloader(Downloader):
     """
-    基于BaiduPCS-Py的百度网盘下载器
+    统一的百度网盘下载器
+    基于BaiduPCS-Py命令行工具，支持baidu_pan://协议和多种链接格式
     """
     
     def __init__(self):
         super().__init__()
-        
-        # 使用新的BaiduPCS服务
-        self.pcs_service = BaiduPCSService()
+        self.pcs_service = baidupcs_service
         
         # 支持的视频和音频格式
         self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
         self.audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.ape', '.ac3', '.dts'}
         
-        logger.info("🔧 BaiduPCS下载器初始化完成")
+        logger.info("🔧 统一百度网盘下载器初始化完成")
+    
+    # =============== 用户管理 ===============
     
     def add_user(self, cookies: str, bduss: str = None) -> bool:
-        """
-        添加百度网盘用户
+        """添加百度网盘用户"""
+        if cookies:
+            result = self.pcs_service.add_user_by_cookies(cookies)
+        elif bduss:
+            result = self.pcs_service.add_user_by_bduss(bduss)
+        else:
+            return False
         
-        Args:
-            cookies: 完整的cookies字符串
-            bduss: BDUSS值（可选）
-            
-        Returns:
-            bool: 是否添加成功
-        """
-        result = self.pcs_service.add_user(cookies=cookies, bduss=bduss)
         return result.get("success", False)
-    
-    def remove_user(self, user_id: int = None) -> bool:
-        """移除用户"""
-        result = self.pcs_service.remove_user(user_id=user_id)
-        return result.get("success", False)
-    
-    def get_users(self) -> List[Dict[str, any]]:
-        """获取用户列表"""
-        return self.pcs_service.get_users()
-    
-    def get_current_user_info(self) -> Optional[Dict[str, any]]:
-        """获取当前用户信息"""
-        return self.pcs_service.get_current_user_info()
     
     def is_authenticated(self) -> bool:
         """检查是否已认证"""
         return self.pcs_service.is_authenticated()
     
+    # =============== 文件管理 ===============
+    
     def get_file_list(self, path: str = "/", share_code: str = None, extract_code: str = None) -> List[Dict[str, any]]:
-        """
-        获取文件列表
-        
-        Args:
-            path: 目录路径
-            share_code: 分享码（暂不支持）
-            extract_code: 提取码（暂不支持）
-            
-        Returns:
-            List[Dict]: 文件列表
-        """
+        """获取文件列表"""
         if not self.is_authenticated():
             raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
         
-        # 注意：BaiduPCS-Py主要用于个人文件，分享链接功能可能有限
-        if share_code:
-            logger.warning("⚠️ 当前版本暂不支持分享链接解析")
-            return []
+        # 目前不支持分享链接，只支持个人文件
+        if share_code or extract_code:
+            logger.warning("⚠️ 当前版本不支持分享链接，只能获取个人文件列表")
         
         result = self.pcs_service.get_file_list(path)
-        if not result.get("success", False):
-            return []
-        files = result.get("files", [])
-        
-        # 文件列表已经是正确的格式，直接返回
-        return files
-    
-    def search_files(self, keyword: str, path: str = "/") -> List[Dict[str, any]]:
-        """搜索文件"""
-        if not self.is_authenticated():
-            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
-        
-        # TODO: 实现搜索功能
-        logger.warning("⚠️ 搜索功能暂未实现")
+        if result.get("success", False):
+            return result.get("files", [])
         return []
     
-    def get_media_files(self, path: str = "/") -> List[Dict[str, any]]:
-        """获取媒体文件"""
+    def get_current_user_info(self) -> Dict[str, any]:
+        """获取当前用户信息"""
         if not self.is_authenticated():
-            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
+            return {}
         
-        # TODO: 实现媒体文件过滤功能
-        logger.warning("⚠️ 媒体文件过滤功能暂未实现")
-        return []
+        user_info_result = self.pcs_service.get_user_info()
+        if user_info_result.get("success", False):
+            raw_info = user_info_result.get("info", "")
+            parsed_info = self.pcs_service._parse_user_info(raw_info)
+            return parsed_info
+        
+        return {}
+    
+    # =============== URL解析 ===============
+    
+    def parse_baidu_pan_url(self, url: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        解析baidu_pan://协议URL
+        返回: (fs_id, filename, file_path)
+        """
+        try:
+            if not url.startswith("baidu_pan://file/"):
+                return None, None, None
+            
+            # baidu_pan://file/867486328653516?filename=xxx.mp4&path=/path/to/file.mp4
+            import urllib.parse
+            
+            # 移除协议头
+            url_part = url.replace("baidu_pan://file/", "")
+            
+            # 分离fs_id和查询参数
+            if "?" in url_part:
+                fs_id, query_string = url_part.split("?", 1)
+                query_params = urllib.parse.parse_qs(query_string)
+                
+                filename = query_params.get("filename", [None])[0]
+                file_path = query_params.get("path", [None])[0]
+                
+                if filename:
+                    filename = urllib.parse.unquote(filename)
+                if file_path:
+                    file_path = urllib.parse.unquote(file_path)
+                
+                return fs_id, filename, file_path
+            else:
+                return url_part, None, None
+                
+        except Exception as e:
+            logger.error(f"❌ 解析baidu_pan URL失败: {e}")
+            return None, None, None
     
     def can_download(self, url: str) -> bool:
         """检查是否可以下载该URL"""
@@ -130,129 +135,23 @@ class BaiduPCSDownloader(Downloader):
         
         return False
     
-    def download_audio(self, url: str, download_path: str, 
-                      quality: DownloadQuality = DownloadQuality.fast, 
-                      title: str = None) -> AudioDownloadResult:
-        """
-        下载音频文件
-        
-        Args:
-            url: 文件URL或路径 (如: baidu_pan://file/path/to/audio.mp3 或 /path/to/audio.mp3)
-            download_path: 下载路径
-            quality: 下载质量
-            title: 自定义标题
-            
-        Returns:
-            AudioDownloadResult: 下载结果
-        """
-        if not self.is_authenticated():
-            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
-        
-        try:
-            # 解析URL获取远程路径
-            remote_path = self._parse_url_to_path(url)
-            if not remote_path:
-                raise ValueError(f"无效的URL格式: {url}")
-            
-            logger.info(f"🎵 开始下载音频: {remote_path}")
-            
-            # 生成本地文件名
-            if title:
-                clean_title = smart_title_clean(title)
-                ext = Path(remote_path).suffix
-                local_filename = f"{clean_title}{ext}"
-            else:
-                local_filename = Path(remote_path).name
-            
-            local_path = os.path.join(download_path, local_filename)
-            
-            # 下载文件
-            result = self.pcs_service.download_file(remote_path, local_path)
-            
-            if result.get("success", False) and os.path.exists(local_path):
-                file_size = os.path.getsize(local_path)
-                return AudioDownloadResult(
-                    success=True,
-                    file_path=local_path,
-                    title=title or Path(local_filename).stem,
-                    duration=0,  # BaiduPCS-Py可能不提供时长信息
-                    file_size=file_size,
-                    format=Path(local_filename).suffix[1:] if Path(local_filename).suffix else "unknown"
-                )
-            else:
-                error_msg = result.get("message", "下载失败")
-                return AudioDownloadResult(
-                    success=False,
-                    error=error_msg
-                )
-                
-        except Exception as e:
-            logger.error(f"❌ 下载音频失败: {e}")
-            return AudioDownloadResult(
-                success=False,
-                error=str(e)
-            )
-    
-    def download_video(self, url: str, download_path: str, 
-                      quality: DownloadQuality = DownloadQuality.fast, 
-                      title: str = None) -> AudioDownloadResult:
-        """
-        下载视频文件
-        """
-        if not self.is_authenticated():
-            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
-        
-        try:
-            # 解析URL获取远程路径
-            remote_path = self._parse_url_to_path(url)
-            if not remote_path:
-                raise ValueError(f"无效的URL格式: {url}")
-            
-            logger.info(f"🎬 开始下载视频: {remote_path}")
-            
-            # 生成本地文件名
-            if title:
-                clean_title = smart_title_clean(title)
-                ext = Path(remote_path).suffix
-                local_filename = f"{clean_title}{ext}"
-            else:
-                local_filename = Path(remote_path).name
-            
-            local_path = os.path.join(download_path, local_filename)
-            
-            # 下载文件
-            result = self.pcs_service.download_file(remote_path, local_path)
-            
-            if result.get("success", False) and os.path.exists(local_path):
-                file_size = os.path.getsize(local_path)
-                return AudioDownloadResult(  # 复用AudioDownloadResult
-                    success=True,
-                    file_path=local_path,
-                    title=title or Path(local_filename).stem,
-                    duration=0,
-                    file_size=file_size,
-                    format=Path(local_filename).suffix[1:] if Path(local_filename).suffix else "unknown"
-                )
-            else:
-                error_msg = result.get("message", "下载失败")
-                return AudioDownloadResult(
-                    success=False,
-                    error=error_msg
-                )
-                
-        except Exception as e:
-            logger.error(f"❌ 下载视频失败: {e}")
-            return AudioDownloadResult(
-                success=False,
-                error=str(e)
-            )
-    
     def _parse_url_to_path(self, url: str) -> Optional[str]:
         """解析URL到文件路径"""
         try:
             # 处理baidu_pan://协议
             if url.startswith("baidu_pan://file/"):
-                return url.replace("baidu_pan://file", "")
+                # 从baidu_pan协议中提取实际的文件路径
+                fs_id, filename, file_path = self.parse_baidu_pan_url(url)
+                if file_path:
+                    # 优先使用path参数中的完整路径
+                    return file_path
+                elif filename:
+                    # 如果没有path，使用根目录+文件名
+                    return f"/{filename}"
+                else:
+                    # 最后使用fs_id作为路径（可能不工作）
+                    logger.warning(f"⚠️ baidu_pan协议缺少路径信息，尝试使用fs_id: {fs_id}")
+                    return f"/{fs_id}"
             elif url.startswith("baidu_pan://"):
                 return url.replace("baidu_pan://", "/")
             # 直接路径
@@ -263,6 +162,161 @@ class BaiduPCSDownloader(Downloader):
         except Exception as e:
             logger.error(f"❌ 解析URL失败: {e}")
             return None
+    
+    # =============== 下载功能 ===============
+    
+    def download_audio(self, url: str, download_path: str, 
+                      quality: DownloadQuality = DownloadQuality.fast, 
+                      title: str = None, use_chunked_download: bool = None) -> AudioDownloadResult:
+        """下载音频文件"""
+        return self._download_file(url, download_path, quality, title, "audio")
+    
+    def download_video(self, url: str, download_path: str, 
+                      quality: DownloadQuality = DownloadQuality.fast, 
+                      title: str = None, use_chunked_download: bool = None) -> AudioDownloadResult:
+        """下载视频文件"""
+        return self._download_file(url, download_path, quality, title, "video")
+    
+    def _download_file(self, url: str, download_path: str, 
+                      quality: DownloadQuality, title: str = None, 
+                      file_type: str = "file") -> AudioDownloadResult:
+        """统一的文件下载方法"""
+        if not self.is_authenticated():
+            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
+        
+        try:
+            # 解析URL获取远程路径
+            remote_path = self._parse_url_to_path(url)
+            if not remote_path:
+                raise ValueError(f"无效的URL格式: {url}")
+            
+            logger.info(f"🎯 开始下载{file_type}: {remote_path}")
+            
+            # 生成本地文件名
+            if title:
+                clean_title = smart_title_clean(title)
+                ext = Path(remote_path).suffix
+                local_filename = f"{clean_title}{ext}"
+            else:
+                local_filename = Path(remote_path).name
+            
+            local_path = os.path.join(download_path, local_filename)
+            
+            # 使用BaiduPCS服务下载
+            result = self.pcs_service.download_file(
+                remote_path=remote_path, 
+                local_path=local_path,
+                downloader="me",  # 使用推荐的me下载器
+                concurrency=5     # 5个并发连接
+            )
+            
+            if result.get("success", False) and os.path.exists(local_path):
+                file_size = os.path.getsize(local_path)
+                
+                logger.info(f"✅ {file_type}下载成功: {local_path}")
+                
+                return AudioDownloadResult(
+                    file_path=local_path,
+                    title=title or Path(local_filename).stem,
+                    duration=0,  # BaiduPCS-Py可能不提供时长信息
+                    cover_url=None,
+                    platform="baidu_pan",
+                    video_id=Path(local_filename).stem,
+                    raw_info={
+                        "file_size": file_size,
+                        "format": Path(local_filename).suffix[1:] if Path(local_filename).suffix else "unknown",
+                        "remote_path": remote_path,
+                        "download_method": "baidupcs"
+                    },
+                    video_path=local_path if file_type == "video" else None
+                )
+            else:
+                error_msg = result.get("message", "下载失败")
+                logger.error(f"❌ {file_type}下载失败: {error_msg}")
+                raise Exception(error_msg)
+                
+        except Exception as e:
+            logger.error(f"❌ 下载{file_type}失败: {e}")
+            raise e
+    
+    # =============== 主下载方法 ===============
+    
+    def download(self, video_url: str, output_dir: str = None, 
+                 quality: DownloadQuality = DownloadQuality.fast, 
+                 need_video: Optional[bool] = False) -> AudioDownloadResult:
+        """主下载方法 - 支持多种URL格式"""
+        if not self.is_authenticated():
+            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
+        
+        try:
+            if not output_dir:
+                output_dir = get_data_dir()
+            
+            logger.info(f"🎯 开始处理百度网盘链接: {video_url}")
+            
+            # 检查是否为baidu_pan://协议链接
+            fs_id, filename, file_path = self.parse_baidu_pan_url(video_url)
+            if fs_id and filename and file_path:
+                logger.info(f"🎯 检测到baidu_pan协议链接: fs_id={fs_id}, filename={filename}")
+                
+                # 直接下载文件（使用解析到的实际路径）
+                result = self._download_file(file_path, output_dir, quality, None, "file")
+                
+                # 获取原始标题并清理
+                original_title = os.path.splitext(filename)[0]  # 去掉扩展名作为标题
+                
+                # 🧹 清理标题，去掉合集相关字符串
+                cleaned_title = smart_title_clean(original_title, platform="baidu_pan", preserve_episode=False)
+                logger.info(f"🧹 百度网盘标题清理: '{original_title}' -> '{cleaned_title}'")
+                
+                # 更新返回结果
+                result.title = cleaned_title
+                result.platform = "baidu_pan"
+                result.video_id = fs_id
+                result.raw_info.update({
+                    "fs_id": fs_id,
+                    "filename": filename,
+                    "source_url": video_url,
+                    "file_path": file_path,
+                    "download_method": "baidupcs_direct"
+                })
+                
+                # 如果需要视频文件，设置video_path
+                if need_video:
+                    result.video_path = result.file_path
+                
+                return result
+            
+            else:
+                # 解析URL获取远程路径
+                remote_path = self._parse_url_to_path(video_url)
+                if not remote_path:
+                    raise ValueError(f"无效的URL格式: {video_url}")
+                
+                logger.info(f"🎯 开始下载文件: {remote_path}")
+                
+                # 根据文件类型选择下载方法
+                ext = Path(remote_path).suffix.lower()
+                title = Path(remote_path).stem
+                
+                if ext in self.audio_extensions:
+                    result = self.download_audio(video_url, output_dir, quality, title)
+                elif ext in self.video_extensions:
+                    result = self.download_video(video_url, output_dir, quality, title)
+                    # 如果需要视频文件，设置video_path
+                    if need_video:
+                        result.video_path = result.file_path
+                else:
+                    # 其他文件类型也支持下载
+                    result = self._download_file(video_url, output_dir, quality, title, "file")
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"❌ 下载文件失败: {e}")
+            raise e
+    
+    # =============== 其他功能 ===============
     
     def get_video_info(self, url: str) -> Dict[str, any]:
         """获取视频信息"""
@@ -295,8 +349,6 @@ class BaiduPCSDownloader(Downloader):
             return {
                 "title": Path(target_file.get("filename", "")).stem,
                 "filename": target_file.get("filename", ""),
-                "size": target_file.get("size", 0),
-                "size_readable": target_file.get("size_readable", ""),
                 "path": target_file.get("path", remote_path),
                 "is_media": target_file.get("is_media", False),
                 "is_dir": target_file.get("is_dir", False)
@@ -314,82 +366,17 @@ class BaiduPCSDownloader(Downloader):
         result = self.pcs_service.upload_file(local_path, remote_path)
         return result.get("success", False)
     
-    def create_download_task(self, files: List[Dict[str, any]], task_config: Dict[str, any]) -> List[Dict[str, any]]:
-        """创建下载任务"""
-        if not self.is_authenticated():
-            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
-        
-        tasks = []
-        for file_info in files:
-            try:
-                # 构建任务信息
-                task = {
-                    "id": f"baidupcs_{file_info.get('fs_id', file_info.get('filename', ''))}",
-                    "filename": file_info.get('filename', ''),
-                    "path": file_info.get('path', ''),
-                    "size": file_info.get('size', 0),
-                    "size_readable": file_info.get('size_readable', ''),
-                    "is_media": file_info.get('is_media', False),
-                    "status": "pending",
-                    "progress": 0.0,
-                    "download_url": f"baidu_pan://file{file_info.get('path', '')}",
-                    "local_path": None,
-                    "error": None
-                }
-                tasks.append(task)
-                
-            except Exception as e:
-                logger.error(f"❌ 创建任务失败: {e}")
-                continue
-        
-        logger.info(f"✅ 创建了 {len(tasks)} 个下载任务")
-        return tasks
+    # =============== 静态方法（向后兼容） ===============
     
-    def download(self, video_url: str, output_dir: str = None, 
-                 quality: DownloadQuality = DownloadQuality.fast, 
-                 need_video: Optional[bool] = False) -> AudioDownloadResult:
+    @staticmethod  
+    def download_video(video_url: str, output_dir: Union[str, None] = None) -> str:
         """
-        主下载方法 - 实现抽象基类要求的方法
-        
-        Args:
-            video_url: 文件URL或路径 (如: baidu_pan://file/path/to/audio.mp3 或 /path/to/audio.mp3)
-            output_dir: 下载路径
-            quality: 下载质量
-            need_video: 是否需要视频文件
-            
-        Returns:
-            AudioDownloadResult: 下载结果
+        下载视频文件（静态方法，保持接口兼容性）
         """
-        if not self.is_authenticated():
-            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
-        
-        try:
-            # 解析URL获取远程路径
-            remote_path = self._parse_url_to_path(video_url)
-            if not remote_path:
-                raise ValueError(f"无效的URL格式: {video_url}")
-            
-            logger.info(f"🎯 开始下载文件: {remote_path}")
-            
-            # 根据文件类型选择下载方法
-            ext = Path(remote_path).suffix.lower()
-            title = Path(remote_path).stem
-            
-            if ext in self.audio_extensions:
-                return self.download_audio(video_url, output_dir, quality, title)
-            elif ext in self.video_extensions:
-                result = self.download_video(video_url, output_dir, quality, title)
-                # 如果需要视频文件，设置video_path
-                if need_video and result.success:
-                    result.video_path = result.file_path
-                return result
-            else:
-                # 其他文件类型也支持下载
-                return self.download_audio(video_url, output_dir, quality, title)
-                
-        except Exception as e:
-            logger.error(f"❌ 下载文件失败: {e}")
-            return AudioDownloadResult(
-                success=False,
-                error=str(e)
-            ) 
+        downloader = BaiduPCSDownloader()
+        result = downloader.download(video_url, output_dir, need_video=True)
+        return result.video_path or result.file_path
+
+
+# 为了向后兼容，创建一个别名
+BaiduPanDownloader = BaiduPCSDownloader 

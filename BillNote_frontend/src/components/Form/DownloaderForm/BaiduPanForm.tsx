@@ -259,9 +259,11 @@ const BaiduPanForm: React.FC = () => {
                           <div>用户: {authStatus.user_info.user_name} (ID: {authStatus.user_info.user_id})</div>
                           <div>
                             存储: {authStatus.user_info.quota_used_readable} / {authStatus.user_info.quota_total_readable}
-                            <span className="ml-2 text-blue-600">
-                              ({authStatus.user_info.quota_usage_percent.toFixed(1)}%)
-                            </span>
+                            {authStatus.user_info.quota_usage_percent !== undefined && (
+                              <span className="ml-2 text-blue-600">
+                                ({authStatus.user_info.quota_usage_percent.toFixed(1)}%)
+                              </span>
+                            )}
                           </div>
                         </div>
                       )}

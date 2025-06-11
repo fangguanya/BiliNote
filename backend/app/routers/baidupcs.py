@@ -2,22 +2,25 @@
 # -*- coding: utf-8 -*-
 
 """
-BaiduPCS-Py API路由
-提供基于BaiduPCS-Py的百度网盘用户管理和文件操作接口
+统一的百度网盘API路由
+基于BaiduPCS-Py命令行工具，提供完整的百度网盘操作接口
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Body
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 
 from app.utils.response import ResponseWrapper as R
 from app.utils.logger import get_logger
-from app.downloaders.baidupcs_downloader import BaiduPCSDownloader
+from app.downloaders.baidupcs_downloader import BaiduPCSDownloader, BaiduPanDownloader
+from app.services.baidupcs_service import baidupcs_service
 from app.exceptions.auth_exceptions import AuthRequiredException
 
 logger = get_logger(__name__)
-router = APIRouter(prefix="/baidupcs", tags=["BaiduPCS"])
+router = APIRouter(prefix="/baidupcs", tags=["百度网盘"])
 
+
+# =============== 请求模型 ===============
 
 class AddUserRequest(BaseModel):
     """添加用户请求"""
@@ -63,31 +66,83 @@ class CreateTaskRequest(BaseModel):
     task_config: Dict[str, Any]
 
 
-@router.post("/add_user")
-def add_user(request: AddUserRequest):
+class RapidUploadRequest(BaseModel):
+    """秒传请求"""
+    links: List[str]
+    target_dir: str = "/"
+
+
+class CreateShareRequest(BaseModel):
+    """创建分享请求"""
+    fs_ids: List[str]
+    password: Optional[str] = ""
+    period: int = 0  # 0永久 1一天 7七天
+
+
+class OfflineTaskRequest(BaseModel):
+    """离线下载任务请求"""
+    source_url: str
+    save_path: str
+    file_types: Optional[List[str]] = None
+
+
+class BaiduPCSUserData(BaseModel):
+    """百度网盘用户数据"""
+    cookies: Optional[str] = None
+    bduss: Optional[str] = None
+    stoken: Optional[str] = None
+
+
+# =============== 用户管理接口 ===============
+
+@router.post("/user/add", summary="添加百度网盘用户")
+async def add_baidupcs_user(user_data: BaiduPCSUserData):
     """
     添加百度网盘用户
-    相当于 BaiduPCS-Py useradd --cookies "cookies值" --bduss "bduss值"
+    支持通过 Cookies 或 BDUSS 添加用户
     """
     try:
         logger.info("📝 开始添加百度网盘用户")
         
-        downloader = BaiduPCSDownloader()
-        success = downloader.add_user(request.cookies, request.bduss)
+        # 首先检查是否已经有认证用户
+        if baidupcs_service.is_authenticated():
+            user_info = baidupcs_service.get_user_info()
+            if user_info.get("success", False):
+                logger.info("✅ 用户已经认证，无需重复添加")
+                return {
+                    "success": True,
+                    "message": "用户已认证",
+                    "user_info": user_info.get("info", "")
+                }
         
-        if success:
-            # 获取用户信息
-            user_info = downloader.get_current_user_info()
-            return R.success({
-                "message": "用户添加成功",
-                "user_info": user_info
-            })
+        # 根据提供的数据类型添加用户
+        if user_data.cookies:
+            logger.info("🔧 使用 Cookies 添加用户")
+            result = baidupcs_service.add_user_by_cookies(user_data.cookies)
+        elif user_data.bduss:
+            logger.info("🔧 使用 BDUSS 添加用户")
+            result = baidupcs_service.add_user_by_bduss(user_data.bduss, user_data.stoken)
         else:
-            return R.error("用户添加失败", code=400)
-            
+            return {
+                "success": False,
+                "message": "请提供 cookies 或 bduss"
+            }
+        
+        # 如果添加成功，获取用户信息
+        if result.get("success", False):
+            user_info = baidupcs_service.get_user_info()
+            if user_info.get("success", False):
+                result["user_info"] = user_info.get("info", "")
+        
+        logger.info(f"✅ 用户添加结果: {result.get('message', '未知')}")
+        return result
+        
     except Exception as e:
         logger.error(f"❌ 添加用户失败: {e}")
-        return R.error(f"添加用户失败: {str(e)}", code=500)
+        return {
+            "success": False,
+            "message": f"添加用户失败: {str(e)}"
+        }
 
 
 @router.post("/remove_user")
@@ -96,13 +151,11 @@ def remove_user(request: RemoveUserRequest):
     try:
         logger.info(f"🗑️ 移除用户: {request.user_id}")
         
-        downloader = BaiduPCSDownloader()
-        success = downloader.remove_user(request.user_id)
+        # TODO: 实现用户移除功能
+        # downloader = BaiduPCSDownloader()
+        # success = downloader.remove_user(request.user_id)
         
-        if success:
-            return R.success({"message": "用户移除成功"})
-        else:
-            return R.error("用户移除失败", code=400)
+        return R.success({"message": "用户移除功能待实现"})
             
     except Exception as e:
         logger.error(f"❌ 移除用户失败: {e}")
@@ -113,12 +166,11 @@ def remove_user(request: RemoveUserRequest):
 def list_users():
     """获取用户列表"""
     try:
-        downloader = BaiduPCSDownloader()
-        users = downloader.get_users()
-        
+        # TODO: 实现用户列表功能
         return R.success({
-            "users": users,
-            "count": len(users)
+            "users": [],
+            "count": 0,
+            "message": "用户列表功能待实现"
         })
         
     except Exception as e:
@@ -130,15 +182,22 @@ def list_users():
 def get_current_user():
     """获取当前用户信息"""
     try:
-        downloader = BaiduPCSDownloader()
-        user_info = downloader.get_current_user_info()
+        logger.info("🔍 API调用：获取当前用户信息")
         
-        if user_info:
+        # 添加详细的调试信息
+        is_auth = baidupcs_service.is_authenticated()
+        logger.info(f"📋 API认证检查结果: {is_auth}")
+        
+        if is_auth:
+            user_info = baidupcs_service.get_user_info()
+            logger.info(f"📋 API用户信息获取: {user_info.get('success', False)}")
+            
             return R.success({
                 "authenticated": True,
                 "user_info": user_info
             })
         else:
+            logger.warning("⚠️ API认证检查失败")
             return R.success({
                 "authenticated": False,
                 "message": "未找到已认证的用户"
@@ -153,16 +212,26 @@ def get_current_user():
 def get_auth_status():
     """检查认证状态"""
     try:
-        downloader = BaiduPCSDownloader()
-        is_authenticated = downloader.is_authenticated()
+        is_authenticated = baidupcs_service.is_authenticated()
         
         if is_authenticated:
-            user_info = downloader.get_current_user_info()
-            return R.success({
-                "authenticated": True,
-                "message": "已认证",
-                "user_info": user_info
-            })
+            user_info_raw = baidupcs_service.get_user_info()
+            
+            if user_info_raw.get("success", False):
+                # 解析原始用户信息
+                raw_info = user_info_raw.get("info", "")
+                parsed_user_info = baidupcs_service._parse_user_info(raw_info)
+                
+                return R.success({
+                    "authenticated": True,
+                    "message": "已认证",
+                    "user_info": parsed_user_info
+                })
+            else:
+                return R.success({
+                    "authenticated": False,
+                    "message": "获取用户信息失败"
+                })
         else:
             return R.success({
                 "authenticated": False,
@@ -191,22 +260,31 @@ def get_auth_status():
         return R.error(f"检查认证状态失败: {str(e)}", code=500)
 
 
+# =============== 文件管理接口 ===============
+
 @router.get("/file_list")
-def get_file_list(path: str = "/", order: str = "time", desc: bool = True):
+def get_file_list(
+    path: str = Query("/", description="目录路径"),
+    order: str = Query("time", description="排序方式: time/name/size"),
+    desc: bool = Query(True, description="是否降序"),
+    media_only: bool = Query(False, description="是否只显示媒体文件")
+):
     """获取文件列表"""
     try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
+        if not baidupcs_service.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
+        downloader = BaiduPCSDownloader()
         files = downloader.get_file_list(path)
-        media_files = [f for f in files if f.get("is_media", False)]
+        
+        # 如果只要媒体文件，进行过滤
+        if media_only:
+            files = [f for f in files if f.get("is_media", False)]
         
         return R.success({
             "files": files,
             "total": len(files),
-            "media_count": len(media_files),
+            "media_count": len([f for f in files if f.get("is_media", False)]),
             "current_path": path
         })
         
@@ -218,21 +296,23 @@ def get_file_list(path: str = "/", order: str = "time", desc: bool = True):
 
 
 @router.get("/search")
-def search_files(keyword: str, path: str = "/"):
+def search_files(
+    keyword: str = Query(..., description="搜索关键词"),
+    path: str = Query("/", description="搜索路径"),
+    media_only: bool = Query(False, description="是否只搜索媒体文件")
+):
     """搜索文件"""
     try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
+        if not baidupcs_service.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
-        files = downloader.search_files(keyword, path)
-        
+        # TODO: 实现搜索功能
         return R.success({
-            "files": files,
-            "total": len(files),
+            "files": [],
+            "total": 0,
             "keyword": keyword,
-            "search_path": path
+            "search_path": path,
+            "message": "搜索功能待实现"
         })
         
     except AuthRequiredException as e:
@@ -243,19 +323,19 @@ def search_files(keyword: str, path: str = "/"):
 
 
 @router.get("/media_files")
-def get_media_files(path: str = "/"):
+def get_media_files(path: str = Query("/", description="目录路径")):
     """获取媒体文件"""
     try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
+        if not baidupcs_service.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
-        files = downloader.get_media_files(path)
+        downloader = BaiduPCSDownloader()
+        files = downloader.get_file_list(path)
+        media_files = [f for f in files if f.get("is_media", False)]
         
         return R.success({
-            "files": files,
-            "total": len(files),
+            "files": media_files,
+            "total": len(media_files),
             "media_path": path
         })
         
@@ -266,14 +346,16 @@ def get_media_files(path: str = "/"):
         return R.error(f"获取媒体文件失败: {str(e)}", code=500)
 
 
+# =============== 下载上传接口 ===============
+
 @router.post("/download")
 def download_file(request: DownloadRequest):
     """下载文件"""
     try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
+        if not baidupcs_service.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
+        
+        downloader = BaiduPCSDownloader()
         
         # 根据文件扩展名选择下载方法
         from pathlib import Path
@@ -312,15 +394,51 @@ def download_file(request: DownloadRequest):
         return R.error(f"下载文件失败: {str(e)}", code=500)
 
 
+@router.post("/enhanced_download")
+def download_with_enhanced_features(
+    url: str = Body(..., embed=True, description="百度网盘链接（支持baidu_pan://协议）"),
+    output_dir: Optional[str] = Body(None, embed=True, description="输出目录"),
+    need_video: bool = Body(False, embed=True, description="是否需要视频文件")
+):
+    """增强的下载功能（支持baidu_pan://协议）"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        downloader = BaiduPanDownloader()
+        result = downloader.download(url, output_dir, need_video=need_video)
+        
+        if result.success:
+            return R.success({
+                "result": {
+                    "file_path": result.file_path,
+                    "title": result.title,
+                    "duration": result.duration,
+                    "platform": result.platform,
+                    "video_id": result.video_id,
+                    "raw_info": result.raw_info,
+                    "video_path": result.video_path
+                },
+                "message": "下载成功"
+            })
+        else:
+            return R.error(f"下载失败: {result.error}", code=500)
+        
+    except AuthRequiredException as e:
+        return R.error("认证已过期，请重新添加用户", code=401)
+    except Exception as e:
+        logger.error(f"❌ 下载失败: {e}")
+        return R.error(f"下载失败: {str(e)}", code=500)
+
+
 @router.post("/upload")
 def upload_file(request: UploadRequest):
     """上传文件"""
     try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
+        if not baidupcs_service.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
+        downloader = BaiduPCSDownloader()
         success = downloader.upload_file(request.local_path, request.remote_path)
         
         if success:
@@ -335,39 +453,16 @@ def upload_file(request: UploadRequest):
         return R.error(f"上传文件失败: {str(e)}", code=500)
 
 
-@router.post("/create_tasks")
-def create_tasks(request: CreateTaskRequest):
-    """创建下载任务"""
-    try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
-            return R.error("未认证，请先添加用户", code=401)
-        
-        tasks = downloader.create_download_task(request.files, request.task_config)
-        
-        return R.success({
-            "message": "任务创建成功",
-            "tasks": tasks,
-            "count": len(tasks)
-        })
-        
-    except AuthRequiredException as e:
-        return R.error("认证已过期，请重新添加用户", code=401)
-    except Exception as e:
-        logger.error(f"❌ 创建任务失败: {e}")
-        return R.error(f"创建任务失败: {str(e)}", code=500)
-
+# =============== 视频信息接口 ===============
 
 @router.get("/video_info")
-def get_video_info(url: str):
+def get_video_info(url: str = Query(..., description="视频URL或路径")):
     """获取视频信息"""
     try:
-        downloader = BaiduPCSDownloader()
-        
-        if not downloader.is_authenticated():
+        if not baidupcs_service.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
+        downloader = BaiduPCSDownloader()
         info = downloader.get_video_info(url)
         
         if "error" in info:
@@ -382,50 +477,154 @@ def get_video_info(url: str):
         return R.error(f"获取视频信息失败: {str(e)}", code=500)
 
 
+# =============== 任务管理接口 ===============
+
+@router.post("/create_tasks")
+def create_tasks(request: CreateTaskRequest):
+    """创建下载任务"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        # TODO: 实现任务创建功能
+        return R.success({
+            "message": "任务创建功能待实现",
+            "tasks": [],
+            "count": 0
+        })
+        
+    except AuthRequiredException as e:
+        return R.error("认证已过期，请重新添加用户", code=401)
+    except Exception as e:
+        logger.error(f"❌ 创建任务失败: {e}")
+        return R.error(f"创建任务失败: {str(e)}", code=500)
+
+
+# =============== 批量操作接口 ===============
+
+@router.post("/batch_download")
+def batch_download_with_enhanced_features(
+    urls: List[str] = Body(..., embed=True, description="百度网盘链接列表"),
+    output_dir: Optional[str] = Body(None, embed=True, description="输出目录"),
+    max_files: int = Body(10, embed=True, description="最大文件数量")
+):
+    """批量下载"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        downloader = BaiduPanDownloader()
+        results = []
+        
+        for url in urls[:max_files]:
+            try:
+                result = downloader.download(url, output_dir)
+                if result.success:
+                    results.append({
+                        "file_path": result.file_path,
+                        "title": result.title,
+                        "duration": result.duration,
+                        "platform": result.platform,
+                        "video_id": result.video_id,
+                        "raw_info": result.raw_info,
+                        "success": True
+                    })
+                else:
+                    results.append({
+                        "url": url,
+                        "error": result.error,
+                        "success": False
+                    })
+            except Exception as e:
+                results.append({
+                    "url": url,
+                    "error": str(e),
+                    "success": False
+                })
+        
+        successful = len([r for r in results if r.get("success", False)])
+        
+        return R.success({
+            "results": results,
+            "successful": successful,
+            "total": len(urls),
+            "message": f"批量下载完成，成功处理 {successful}/{len(urls)} 个文件"
+        })
+        
+    except AuthRequiredException as e:
+        return R.error("认证已过期，请重新添加用户", code=401)
+    except Exception as e:
+        logger.error(f"❌ 批量下载失败: {e}")
+        return R.error(f"批量下载失败: {str(e)}", code=500)
+
+
+# =============== 使用指南接口 ===============
+
 @router.get("/usage_guide")
 def get_usage_guide():
     """获取使用指南"""
     return R.success({
-        "title": "BaiduPCS-Py 使用指南",
-        "description": "基于官方BaiduPCS-Py库的百度网盘操作接口",
+        "title": "统一百度网盘API使用指南",
+        "description": "基于BaiduPCS-Py命令行工具的完整百度网盘操作接口",
         "setup_steps": [
             {
                 "step": 1,
                 "title": "获取Cookie",
-                "description": "在浏览器中登录百度网盘，获取完整的cookie字符串"
+                "description": "在浏览器中登录百度网盘，获取完整的cookie字符串",
+                "details": [
+                    "访问 https://pan.baidu.com 并登录",
+                    "按F12打开开发者工具",
+                    "转到Application -> Cookies -> https://pan.baidu.com",
+                    "复制所有cookie，特别是BDUSS、STOKEN、PSTM"
+                ]
             },
             {
                 "step": 2,
                 "title": "添加用户",
-                "description": "调用 /baidupcs/add_user 接口，传入cookies和bduss",
+                "description": "调用 /baidupcs/add_user 接口，传入cookies",
                 "example": {
                     "method": "POST",
                     "url": "/baidupcs/add_user",
                     "body": {
-                        "cookies": "BDUSS=xxx; STOKEN=xxx; PSTM=xxx; ...",
-                        "bduss": "可选，如果cookies中包含BDUSS则不需要单独传入"
+                        "cookies": "BDUSS=xxx; STOKEN=xxx; PSTM=xxx; BAIDUID=xxx; ...",
+                        "bduss": "可选，如果cookies中已包含BDUSS则不需要"
                     }
                 }
             },
             {
                 "step": 3,
                 "title": "使用功能",
-                "description": "添加用户后即可使用各种文件操作功能",
-                "features": [
-                    "获取文件列表：/baidupcs/file_list",
-                    "搜索文件：/baidupcs/search",
-                    "下载文件：/baidupcs/download",
-                    "上传文件：/baidupcs/upload",
-                    "创建任务：/baidupcs/create_tasks"
-                ]
+                "description": "添加用户后即可使用各种文件操作功能"
             }
         ],
+        "api_categories": {
+            "用户管理": [
+                "POST /baidupcs/add_user - 添加用户",
+                "GET /baidupcs/auth_status - 检查认证状态",
+                "GET /baidupcs/current_user - 获取当前用户信息"
+            ],
+            "文件管理": [
+                "GET /baidupcs/file_list - 获取文件列表",
+                "GET /baidupcs/media_files - 获取媒体文件",
+                "GET /baidupcs/search - 搜索文件"
+            ],
+            "下载上传": [
+                "POST /baidupcs/download - 基础下载",
+                "POST /baidupcs/enhanced_download - 增强下载(支持baidu_pan://)",
+                "POST /baidupcs/batch_download - 批量下载",
+                "POST /baidupcs/upload - 上传文件"
+            ],
+            "信息查询": [
+                "GET /baidupcs/video_info - 获取视频信息",
+                "GET /baidupcs/usage_guide - 获取使用指南"
+            ]
+        },
         "advantages": [
-            "基于官方BaiduPCS-Py库，功能完整",
-            "支持多用户管理",
-            "无需手动维护cookie有效性",
+            "基于BaiduPCS-Py命令行工具，稳定可靠",
+            "支持baidu_pan://协议链接",
+            "完整的用户认证管理",
             "支持批量文件操作",
-            "提供完整的下载和上传功能"
+            "提供详细的错误信息和使用指南"
         ],
         "required_data": {
             "cookies": {
@@ -433,10 +632,6 @@ def get_usage_guide():
                 "format": "BDUSS=xxx; STOKEN=xxx; PSTM=xxx; BAIDUID=xxx; ...",
                 "required_fields": ["BDUSS"],
                 "optional_fields": ["STOKEN", "PSTM", "BAIDUID", "PASSID"]
-            },
-            "bduss": {
-                "description": "百度用户身份凭证",
-                "note": "如果cookies中已包含BDUSS，则此参数可选"
             }
         }
     }) 

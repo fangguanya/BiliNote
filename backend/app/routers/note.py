@@ -2093,7 +2093,7 @@ def validate_baidu_pan_cookie(request: dict):
         
         # 尝试使用cookie进行API调用验证
         try:
-            from app.downloaders.baidu_pan_downloader import BaiduPanDownloader
+            from app.downloaders.baidupcs_downloader import BaiduPanDownloader
             
             # 临时创建下载器实例进行测试
             downloader = BaiduPanDownloader()
@@ -2308,7 +2308,7 @@ def save_baidu_pan_cookie(request: dict):
                 )
             
             # 尝试验证cookie有效性
-            from app.downloaders.baidu_pan_downloader import BaiduPanDownloader
+            from app.downloaders.baidupcs_downloader import BaiduPanDownloader
             
             # 临时测试cookie
             test_downloader = BaiduPanDownloader()
