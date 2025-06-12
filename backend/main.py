@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from starlette.staticfiles import StaticFiles
 from dotenv import load_dotenv
+from fastapi import FastAPI
 
 from app.core.exception_handlers import register_exception_handlers
 from app.db.model_dao import init_model_table
@@ -35,7 +36,7 @@ if not os.path.exists(out_dir):
 
 @asynccontextmanager
 async def lifespan(app):
-    # 启动事件
+    # 应用启动时执行
     logger.warning("🚀 应用启动中...")
     register_handler()
     ensure_ffmpeg_or_raise()
@@ -51,10 +52,8 @@ async def lifespan(app):
     
     yield
     
-    # 关闭事件
+    # 应用关闭时执行
     logger.warning("🛑 应用关闭中...")
-    # 停止任务队列
-    from app.core.task_queue import task_queue
     task_queue.stop()
     logger.warning("🛑 任务队列已停止")
 

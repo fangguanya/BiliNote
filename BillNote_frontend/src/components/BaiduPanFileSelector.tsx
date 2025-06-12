@@ -24,6 +24,7 @@ import {
   AlertCircleIcon,
   RefreshCwIcon
 } from 'lucide-react'
+import { logger } from '@/lib/logger'
 
 interface BaiduPanFile {
   fs_id: string
@@ -65,30 +66,47 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   // 存储清理函数的引用
   const cleanupRef = useRef<(() => void) | null>(null)
 
+  // 🧭 根据路径构建历史数组
+  const buildPathHistory = (path: string): string[] => {
+    if (!path || path === '/') return ['/']
+    const parts = path.split('/').filter(Boolean)
+    let acc = ''
+    const history: string[] = ['/']
+    parts.forEach((p) => {
+      acc += '/' + p
+      history.push(acc)
+    })
+    return history
+  }
+
   // 检查认证状态
   const checkAuthStatus = async () => {
     setAuthLoading(true)
     try {
-      console.log('🔍 开始检查认证状态')
+      logger.log('🔍 开始检查认证状态')
       const result = await getBaiduPanAuthStatus()
-      console.log('📋 认证状态结果:', result)
+      logger.log('📋 认证状态结果:', result)
       
       if (result && result.code === 0) {
         const isAuth = result.data?.authenticated || false
         setAuthenticated(isAuth)
-        console.log(`🔐 认证状态: ${isAuth}`)
+        logger.log(`🔐 认证状态: ${isAuth}`)
         
         if (isAuth) {
-          console.log('✅ 已认证，开始加载文件列表')
-          await loadFiles('/')
+          // 读取上次路径
+          const lastPath = localStorage.getItem('baiduPanLastPath') || '/'
+          logger.log('🗂️ 使用上次路径: ', lastPath)
+          setPathHistory(buildPathHistory(lastPath))
+          logger.log('✅ 已认证，开始加载文件列表')
+          await loadFiles(lastPath)
         } else {
           // 认证失败，清空文件列表
-          console.log('❌ 未认证，清空文件列表')
+          logger.log('❌ 未认证，清空文件列表')
           setFiles([])
           setMediaCount(0)
         }
       } else {
-        console.warn('⚠️ 认证状态检查返回异常结果:', result)
+        logger.log('⚠️ 认证状态检查返回异常结果:', result)
         setAuthenticated(false)
         setFiles([])
         setMediaCount(0)
@@ -97,7 +115,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
         }
       }
     } catch (error: any) {
-      console.error('❌ 检查认证状态失败:', error)
+      logger.log('❌ 检查认证状态失败:', error)
       setAuthenticated(false)
       setFiles([])
       setMediaCount(0)
@@ -112,23 +130,25 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   const loadFiles = async (path: string) => {
     setLoading(true)
     try {
-      console.log('🗂️ 开始加载文件列表:', path)
+      logger.log('🗂️ 开始加载文件列表:', path)
       const result = await getBaiduPanFileList(path)
-      console.log('📋 文件列表结果:', result)
+      logger.log('📋 文件列表结果:', result)
       
       if (result && result.files) {
         setFiles(result.files)
         setMediaCount(result.media_count || 0)
         setCurrentPath(path)
-        console.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件`)
+        // 记录到localStorage
+        localStorage.setItem('baiduPanLastPath', path)
+        logger.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件`)
       } else {
-        console.warn('⚠️ 文件列表结果格式异常:', result)
+        logger.log('⚠️ 文件列表结果格式异常:', result)
         setFiles([])
         setMediaCount(0)
         toast.error('文件列表格式异常')
       }
     } catch (error: any) {
-      console.error('❌ 加载文件列表失败:', error)
+      logger.log('❌ 加载文件列表失败:', error)
       
       // 检查是否是认证错误
       if (error.response?.status === 401 || 
@@ -172,26 +192,26 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
 
   // 切换文件选择
   const toggleFileSelection = (file: BaiduPanFile) => {
-    console.log('🎯 尝试切换文件选择:', file.filename, 'is_media:', file.is_media)
+    logger.log('🎯 尝试切换文件选择:', file.filename, 'is_media:', file.is_media)
     
     if (!file.is_media) {
-      console.log('⚠️ 非媒体文件，跳过选择:', file.filename)
+      logger.log('⚠️ 非媒体文件，跳过选择:', file.filename)
       return // 只能选择媒体文件
     }
     
     const isSelected = selectedFiles.some(f => f.fs_id === file.fs_id)
-    console.log(`🔄 文件选择状态变化: ${file.filename} ${isSelected ? '取消选择' : '选择'}`)
+    logger.log(`🔄 文件选择状态变化: ${file.filename} ${isSelected ? '取消选择' : '选择'}`)
     
     if (isSelected) {
       setSelectedFiles(prev => {
         const newFiles = prev.filter(f => f.fs_id !== file.fs_id)
-        console.log('📤 更新选择列表，移除文件，当前选择数量:', newFiles.length)
+        logger.log('📤 更新选择列表，移除文件，当前选择数量:', newFiles.length)
         return newFiles
       })
     } else {
       setSelectedFiles(prev => {
         const newFiles = [...prev, file]
-        console.log('📥 更新选择列表，添加文件，当前选择数量:', newFiles.length)
+        logger.log('📥 更新选择列表，添加文件，当前选择数量:', newFiles.length)
         return newFiles
       })
     }
@@ -237,7 +257,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
       setIsOpen(false)
       
     } catch (error) {
-      console.error('创建任务失败:', error)
+      logger.log('创建任务失败:', error)
     } finally {
       setCreating(false)
     }
@@ -251,15 +271,15 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
       
       if (result) {
         const data = result
-        console.log('🔍 百度网盘二维码数据:', data)
-        console.log('🖼️ 二维码字段检查:', {
+        logger.log('🔍 百度网盘二维码数据:', data)
+        logger.log('🖼️ 二维码字段检查:', {
           qr_code: data.qr_code,
           session_id: data.session_id,
           expires_in: data.expires_in
         })
         
         const qrCodeUrl = data.qr_code
-        console.log('✅ 最终使用的二维码URL:', qrCodeUrl)
+        logger.log('✅ 最终使用的二维码URL:', qrCodeUrl)
         
         setQrCode(qrCodeUrl)
         setLoginSessionId(data.session_id)
@@ -271,7 +291,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
         setShowLoginDialog(false)
       }
     } catch (error) {
-      console.error('启动百度网盘登录失败:', error)
+      logger.log('启动百度网盘登录失败:', error)
       toast.error('启动登录失败')
       setShowLoginDialog(false)
     }
@@ -312,7 +332,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
           }
         }
       } catch (error) {
-        console.error('检查登录状态失败:', error)
+        logger.log('检查登录状态失败:', error)
         clearInterval(checkInterval)
         setLoginChecking(false)
       }
@@ -540,7 +560,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                               <Checkbox
                                 checked={selectedFiles.some(sf => sf.fs_id === file.fs_id)}
                                 onCheckedChange={(checked) => {
-                                  console.log('🔲 Checkbox状态变化:', file.filename, checked)
+                                  logger.log('🔲 Checkbox状态变化:', file.filename, checked)
                                   toggleFileSelection(file)
                                 }}
                                 onClick={(e) => e.stopPropagation()}
@@ -637,11 +657,11 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                   alt="百度网盘登录二维码"
                   className="w-48 h-48 border rounded-md"
                   onError={(e) => {
-                    console.error('❌ 二维码图片加载失败:', qrCode)
-                    console.error('❌ 图片错误事件:', e)
+                    logger.log('❌ 二维码图片加载失败:', qrCode)
+                    logger.log('❌ 图片错误事件:', e)
                   }}
                   onLoad={() => {
-                    console.log('✅ 二维码图片加载成功:', qrCode.substring(0, 50) + '...')
+                    logger.log('✅ 二维码图片加载成功:', qrCode.substring(0, 50) + '...')
                   }}
                 />
               </div>

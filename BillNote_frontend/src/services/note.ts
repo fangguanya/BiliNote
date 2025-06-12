@@ -206,21 +206,21 @@ export const batch_retry_non_success_tasks = async () => {
 }
 
 // 强制重试所有任务
-export const force_retry_all_tasks = async (config?: {
+export const force_retry_all_tasks = async (task_ids: string[], config?: {
   model_name?: string
   provider_id?: string
   style?: string
-  format?: string[]
   video_understanding?: boolean
   video_interval?: number
 }) => {
   try {
-    const response = await request.post('/force_retry_all', config || {})
-    
-    if (response.data.code === 0) {
-      const result = response.data.data
-      toast.success(`成功强制重试 ${result.retried_count} 个任务`)
-      return result
+    const payload = {
+      task_ids: task_ids,
+      config: config || {}
+    }
+    const response = await request.post('/force_retry_all', payload)
+    if (response.data.success) {
+      return response.data.data
     } else {
       toast.error(response.data.message || '强制重试失败')
       throw new Error(response.data.message || '强制重试失败')

@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict
+import threading
 
 from fastapi import HTTPException
 
@@ -7,7 +8,7 @@ from app.downloaders.local_downloader import LocalDownloader
 from app.enmus.task_status_enums import TaskStatus
 from app.exceptions.auth_exceptions import AuthRequiredException
 import os
-from typing import Union, Optional
+from typing import Union, Optional, List
 
 from pydantic import HttpUrl
 
@@ -39,12 +40,10 @@ from app.utils.note_helper import replace_content_markers
 from app.utils.status_code import StatusCode
 from app.utils.video_helper import generate_screenshot
 
-# from app.services.whisperer import transcribe_audio
-# from app.services.gpt import summarize_text
 from dotenv import load_dotenv
 from app.utils.logger import get_logger
 from app.utils.video_reader import VideoReader
-from events import transcription_finished
+from app.core.task_queue import get_task_queue
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -59,6 +58,8 @@ logger.info("starting up")
 NOTE_OUTPUT_DIR = "note_results"
 
 class NoteGenerator:
+    _instance = None
+
     def __init__(self):
         self.model_size: str = 'base'
         self.device: Union[str, None] = None
@@ -194,13 +195,13 @@ class NoteGenerator:
             grid_size=[]
     ) -> NoteResult:
 
+        # 强制重置任务状态，确保每次调用都重新执行
+        logger.info(f"🎯 开始生成笔记，强制重置任务状态: {task_id}")
+        self.update_task_status(task_id, TaskStatus.RUNNING, message="强制重置并开始处理任务")
+
         try:
-            logger.info(f"🎯 开始解析并生成笔记，task_id={task_id}")
-            # 首先设置任务状态为运行中
-            self.update_task_status(task_id, TaskStatus.RUNNING, message="开始处理任务")
-            
             # 然后开始具体的解析工作
-            self.update_task_status(task_id, TaskStatus.PARSING)
+            self.update_task_status(task_id, TaskStatus.PARSING, message="解析任务参数")
             downloader = self.get_downloader(platform)
             gpt = self.get_gpt(model_name=model_name, provider_id=provider_id)
             video_img_urls = []
@@ -210,7 +211,7 @@ class NoteGenerator:
 
             # -------- 1. 下载音频 --------
             try:
-                self.update_task_status(task_id, TaskStatus.DOWNLOADING)
+                self.update_task_status(task_id, TaskStatus.DOWNLOADING, message="开始下载媒体文件")
 
                 # 加载音频缓存（如果存在）
                 audio = None
@@ -416,3 +417,25 @@ class NoteGenerator:
                     "error": str(e)
                 }
             )
+
+class NoteService:
+    def __init__(self):
+        from app.core.task_queue import task_queue
+        self.task_queue = task_queue
+
+    def force_retry_all(self, task_ids: List[str], override_data: Optional[dict] = None) -> dict:
+        """
+        强制重试所有任务。
+        :param task_ids: 要重试的任务ID列表。
+        :param override_data: 可选的，用于覆盖任务的新配置。
+        :return: 包含重试计数的字典。
+        """
+        logger.info(f"⚡️ 服务层: 接收到强制重试 {len(task_ids)} 个任务的请求，新配置: {override_data}")
+        result = self.task_queue.force_retry_all(task_ids=task_ids, override_data=override_data)
+        logger.info(f"✅ 服务层: 强制批量重试任务完成: {result}")
+        return result
+
+    def get_task_status(self, task_id: str) -> Optional[dict]:
+        """获取单个任务的状态"""
+        task = self.task_queue.get_task_status(task_id)
+        # ... existing code ...

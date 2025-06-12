@@ -5,6 +5,7 @@ import traceback
 import uuid
 import time
 import glob
+import asyncio
 from typing import Optional, Union, List, Tuple
 from urllib.parse import urlparse
 
@@ -14,21 +15,19 @@ from dataclasses import asdict
 
 from app.db.video_task_dao import get_task_by_video
 from app.enmus.note_enums import DownloadQuality
-from app.services.note import NoteGenerator, logger
+from app.services.note import NoteGenerator, logger, NoteService
 from app.utils.response import ResponseWrapper as R
-from app.utils.url_parser import extract_video_id, is_collection_url, extract_collection_videos, identify_platform
+from app.utils.url_parser import extract_video_id, is_collection_url, extract_collection_videos_async, identify_platform
+from app.utils.task_utils import save_original_request_data, load_original_request_data
 from app.validators.video_url_validator import is_supported_video_url
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
 from app.enmus.task_status_enums import TaskStatus
 from app.models.note_api import StandardResponse, SingleVideoResponse, CollectionResponse, TaskInfo
-from app.services.note import NoteGenerator
-from app.utils.logger import get_logger
-from app.core.task_queue import task_queue, TaskType, TaskStatus as QueueTaskStatus
-
-# from app.services.downloader import download_raw_audio
-# from app.services.whisperer import transcribe_audio
+from app.core.task_queue import TaskType, TaskStatus as QueueTaskStatus, task_queue
+from app.core.exception_handlers import wrap_request_handler, record_request_error
+from app.utils.baidu_utils import delete_baidu_pan_file
 
 router = APIRouter()
 
@@ -70,54 +69,8 @@ class VideoRequest(BaseModel):
         return v
 
 
-NOTE_OUTPUT_DIR = "note_results"
-UPLOAD_DIR = "uploads"
-
-
-def save_original_request_data(task_id: str, request_data: dict):
-    """保存原始请求数据到持久化存储"""
-    os.makedirs(NOTE_OUTPUT_DIR, exist_ok=True)
-    
-    try:
-        # 添加时间戳和任务ID
-        request_data_with_meta = {
-            "task_id": task_id,
-            "created_at": time.time(),
-            "created_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            "original_request": request_data
-        }
-        
-        # 保存到 {task_id}.request.json 文件
-        request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
-        with open(request_file_path, "w", encoding="utf-8") as f:
-            json.dump(request_data_with_meta, f, ensure_ascii=False, indent=2)
-            
-        logger.info(f"✅ 原始请求数据已保存: {task_id}")
-        
-    except Exception as e:
-        logger.error(f"❌ 保存原始请求数据失败: {task_id}, {e}")
-
-
-def load_original_request_data(task_id: str) -> dict:
-    """从持久化存储加载原始请求数据"""
-    try:
-        request_file_path = os.path.join(NOTE_OUTPUT_DIR, f"{task_id}.request.json")
-        
-        if os.path.exists(request_file_path):
-            with open(request_file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            # 返回原始请求数据
-            original_request = data.get("original_request", {})
-            logger.info(f"✅ 成功加载原始请求数据: {task_id}")
-            return original_request
-        else:
-            logger.warning(f"⚠️ 原始请求数据文件不存在: {task_id}")
-            return {}
-            
-    except Exception as e:
-        logger.error(f"❌ 加载原始请求数据失败: {task_id}, {e}")
-        return {}
+NOTE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "note_results"))
+UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "uploads"))
 
 
 def save_note_to_file(task_id: str, note):
@@ -250,19 +203,22 @@ async def handle_collection_generation(
     
     try:
         # 对于其他合集URL，尝试快速提取视频列表
-        logger.info("🔍 快速提取合集视频列表...")
+        logger.info("🔍 [异步] 快速提取合集视频列表...")
+        videos = None
         
         try:
-            # 使用快速提取方法（有超时保护）
-            videos = await extract_collection_videos_with_timeout(
-                request.video_url, 
-                platform, 
-                request.max_collection_videos,
-                timeout_seconds=8  # 8秒超时
+            # 使用新的异步提取函数，并设置超时
+            videos = await asyncio.wait_for(
+                extract_collection_videos_async(
+                    request.video_url, 
+                    platform, 
+                    request.max_collection_videos
+                ),
+                timeout=25.0  # 设置25秒超时
             )
             
             if videos:
-                logger.info(f"📹 快速提取成功，共 {len(videos)} 个视频")
+                logger.info(f"📹 [异步] 快速提取成功，共 {len(videos)} 个视频")
                 
                 # 为每个视频创建任务
                 task_list = []
@@ -307,11 +263,15 @@ async def handle_collection_generation(
                     message=f"合集处理完成，共创建 {len(task_list)} 个任务"
                 )
                 
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ 快速提取超时 (25秒)，将回退到后台异步处理。")
+            # 超时后 videos 会是 None, 流程将自然进入下面的回退逻辑
         except Exception as e:
-            logger.warning(f"⚠️ 快速提取失败: {e}")
+            logger.warning(f"⚠️ [异步] 快速提取失败: {e}", exc_info=True)
+            # 同样回退到后台异步处理
         
-        # 如果快速提取失败，回退到异步处理
-        logger.info("🔄 回退到异步处理模式")
+        # 如果快速提取失败、超时或没有返回视频，则回退到异步处理
+        logger.info("🔄 回退到后台异步处理模式 (创建单个合集任务)")
         
         task_data = {
             'video_url': request.video_url,
@@ -338,17 +298,17 @@ async def handle_collection_generation(
             total_videos=0,
             created_tasks=0,
             task_list=[],
-            message="合集检测成功，正在后台解析和创建任务，请稍等片刻查看任务列表"
+            message="合集视频列表解析耗时较长，已转为后台任务处理，请稍后在任务列表中查看进度。"
         )
         
         return StandardResponse(
             success=True,
             data=response_data,
-            message="合集处理已开始，正在后台解析视频列表"
+            message="合集处理已转为后台任务"
         )
         
     except Exception as e:
-        logger.error(f"❌ 处理合集失败: {e}")
+        logger.error(f"❌ 处理合集失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"处理合集失败: {str(e)}")
 
 
@@ -533,51 +493,6 @@ async def image_proxy(request: Request, url: str):
 
 
 # 任务处理逻辑已移至 app/core/task_queue.py 中的 TaskQueue 类
-
-import asyncio
-import threading
-from typing import List, Tuple
-
-async def extract_collection_videos_with_timeout(
-    url: str, 
-    platform: str, 
-    max_videos: int = 50,
-    timeout_seconds: int = 8
-) -> List[Tuple[str, str]]:
-    """
-    带超时的合集视频提取函数
-    """
-    logger.info(f"🕒 开始快速提取合集视频，超时限制: {timeout_seconds}秒")
-    
-    result = {"videos": [], "error": None}
-    
-    def extract_thread():
-        try:
-            # 调用原有的提取函数
-            videos = extract_collection_videos(url, platform, max_videos)
-            result["videos"] = videos
-            
-        except Exception as e:
-            result["error"] = e
-    
-    # 在线程中执行提取
-    thread = threading.Thread(target=extract_thread)
-    thread.daemon = True
-    thread.start()
-    
-    # 等待超时
-    thread.join(timeout=timeout_seconds)
-    
-    if thread.is_alive():
-        logger.warning(f"⚠️ 提取超时 ({timeout_seconds}秒)，放弃快速提取")
-        return []
-    
-    if result["error"]:
-        logger.warning(f"⚠️ 提取出错: {result['error']}")
-        return []
-    
-    logger.info(f"✅ 快速提取成功，获得 {len(result['videos'])} 个视频")
-    return result["videos"]
 
 @router.get("/queue_status")
 def get_queue_status():
@@ -1255,39 +1170,32 @@ class ForceRetryRequest(BaseModel):
     video_understanding: Optional[bool] = None
     video_interval: Optional[int] = None
 
+class ForceRetryAllRequest(BaseModel):
+    """强制全部重试请求模型"""
+    task_ids: List[str]
+    config: Optional[dict] = {}
+
 @router.post("/force_retry_all")
-def force_retry_all_tasks(request: Optional[ForceRetryRequest] = None):
-    """强制重试所有任务，使用最新配置"""
+def force_retry_all(request: ForceRetryAllRequest):
+    """
+    强制重试所有任务，可选择使用新的配置覆盖。
+    """
     try:
-        # 构建新的任务配置
-        new_task_data = {}
-        if request:
-            if request.model_name:
-                new_task_data['model_name'] = request.model_name
-            if request.provider_id:
-                new_task_data['provider_id'] = request.provider_id
-            if request.style:
-                new_task_data['style'] = request.style
-            if request.format:
-                new_task_data['format'] = request.format
-            if request.video_understanding is not None:
-                new_task_data['video_understanding'] = request.video_understanding
-            if request.video_interval is not None:
-                new_task_data['video_interval'] = request.video_interval
+        logger.info(f"⚡️ API层: 接收到强制重试所有任务请求 for {len(request.task_ids)} tasks")
         
-        result = task_queue.force_retry_all_tasks(new_task_data if new_task_data else None)
-        logger.info(f"✅ 强制批量重试所有任务完成: {result}")
+        config = request.config
+        logger.info(f"   - 提供的覆盖配置: {config}")
+
+        note_service = NoteService()
+        result = note_service.force_retry_all(task_ids=request.task_ids, override_data=config)
         
-        return R.success({
-            "retried_count": result["retried_count"],
-            "total_tasks": result["total_tasks"],
-            "message": result["message"],
-            "updated_config": new_task_data
-        })
+        return R.success(data=result)
         
     except Exception as e:
-        logger.error(f"❌ 强制批量重试所有任务出错: {e}")
-        return R.error(f"强制批量重试失败: {str(e)}")
+        logger.error(f"❌ 强制重试所有任务失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/force_retry_task/{task_id}")
 def force_retry_task(task_id: str, request: Optional[ForceRetryRequest] = None):
@@ -2393,3 +2301,67 @@ def clear_baidu_pan_cookie():
     except Exception as e:
         logger.error(f"❌ 清除百度网盘cookie失败: {e}")
         return R.error(f"清除cookie失败: {str(e)}")
+
+@router.post("/clear_baidu_pan_cookie")
+def clear_baidu_pan_cookie():
+    try:
+        from app.services.baidupcs_service import clear_cookie
+        clear_cookie()
+        logger.info("✅ 百度网盘cookie已清除")
+        return R.success("Cookie已清除")
+    except Exception as e:
+        logger.error(f"❌ 清除百度网盘cookie失败: {e}")
+        return R.error(f"清除cookie失败: {str(e)}")
+
+@router.post("/debug/force_retry_task/{task_id}")
+def debug_force_retry_task(task_id: str):
+    """调试用：强制重试单个任务（检查存储路径）"""
+    try:
+        logger.warning(f"🔍 [DEBUG] 调试强制重试单个任务: {task_id}")
+        
+        # 检查task_persistence目录
+        from app.core.task_queue import task_queue
+        task_persistence_dir = task_queue.persistence_dir
+        logger.warning(f"  - 任务持久化目录: {task_persistence_dir}")
+        task_file = os.path.join(task_persistence_dir, f"{task_id}.json")
+        logger.warning(f"  - 任务文件存在?: {os.path.exists(task_file)}")
+        
+        # 检查note_results目录
+        note_results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "note_results"))
+        logger.warning(f"  - 笔记结果目录: {note_results_dir}")
+        logger.warning(f"  - 笔记结果目录存在?: {os.path.exists(note_results_dir)}")
+        
+        request_file = os.path.join(note_results_dir, f"{task_id}.request.json")
+        logger.warning(f"  - 请求文件存在?: {os.path.exists(request_file)}")
+        
+        if os.path.exists(request_file):
+            try:
+                with open(request_file, 'r', encoding='utf-8') as f:
+                    request_data = json.load(f)
+                logger.warning(f"  - 请求数据键: {list(request_data.keys())}")
+                
+                original_request = request_data.get("original_request", {})
+                logger.warning(f"  - 原始请求键: {list(original_request.keys())}")
+                
+                if "video_url" in original_request and "platform" in original_request:
+                    logger.warning(f"  - 找到必要的video_url和platform")
+                    return R.success({
+                        "message": "找到了有效的请求文件",
+                        "task_id": task_id,
+                        "request_file": request_file,
+                        "keys": list(original_request.keys()),
+                        "video_url": original_request.get("video_url"),
+                        "platform": original_request.get("platform")
+                    })
+                else:
+                    logger.warning(f"  - 原始请求缺少必要信息")
+                    return R.error("请求文件中缺少必要的video_url或platform")
+            except Exception as e:
+                logger.error(f"  - 加载请求文件失败: {e}")
+                return R.error(f"加载请求文件失败: {str(e)}")
+        else:
+            logger.warning(f"  - 请求文件不存在")
+            return R.error("请求文件不存在")
+    except Exception as e:
+        logger.error(f"❌ 调试重试任务失败: {e}")
+        return R.error(f"调试失败: {str(e)}")

@@ -2,6 +2,9 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { delete_task, generateNote } from '@/services/note.ts'
 import { v4 as uuidv4 } from 'uuid'
+import { shallow } from 'zustand/shallow'
+import { immer } from 'zustand/middleware/immer'
+import { logger } from '@/lib/logger'
 
 
 export type TaskStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
@@ -218,26 +221,33 @@ export const useTaskStore = create<TaskStore>()(
           const { retry_task, force_retry_task } = await import('@/services/note')
           
           try {
-            await retry_task(id)
-            console.log('✅ 普通重试成功:', id)
+            const result = await retry_task(id, payload)
+            if (result && result.status === 'success') {
+              logger.info('✅ 普通重试成功:', id)
+              // 可以在这里更新任务状态为PENDING，如果需要立即反馈
+              updateTaskContent(id, { status: 'PENDING' })
+            } else {
+              throw new Error(result?.message || '未知错误')
+            }
           } catch (error) {
-            console.log('⚠️ 普通重试失败，尝试强制重试:', error)
-            // 普通重试失败，尝试强制重试
-            await force_retry_task(id)
+            logger.warn('⚠️ 普通重试失败，尝试强制重试:', error)
+            try {
+              // 如果普通重试失败，可以自动尝试强制重试
+              const result = await retry_task(id, true)
+              if (result && result.status === 'success') {
+                logger.info('✅ 强制重试成功:', id)
+                updateTaskContent(id, { status: 'PENDING' })
+              } else {
+                throw new Error(result?.message || '未知错误')
+              }
+            } catch (forceError) {
+              logger.error('❌ 强制重试也失败:', forceError)
+              updateTaskContent(id, {
+                status: 'FAILED',
+                result: `重试失败: ${(forceError as Error).message}`,
+              })
+            }
           }
-          
-          // 重试成功，更新前端状态
-          set(state => ({
-            tasks: state.tasks.map(t =>
-                t.id === id
-                    ? {
-                      ...t,
-                      formData: payload || t.formData, // 如果有新的formData则更新
-                      status: 'PENDING',
-                    }
-                    : t
-            ),
-          }))
         } catch (error) {
           console.error('🔥 重试任务失败:', error)
           // 重试失败，保持原状态或者可以显示错误信息

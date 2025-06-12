@@ -28,6 +28,7 @@ import { toast } from 'sonner'
 import { force_retry_all_tasks } from '@/services/note'
 import { useTaskStore } from '@/store/taskStore'
 import { useModelStore } from '@/store/modelStore'
+import { logger } from '@/lib/logger'
 
 interface ForceRetryAllProps {
   disabled?: boolean
@@ -56,6 +57,8 @@ const ForceRetryAll: React.FC<ForceRetryAllProps> = ({ disabled = false }) => {
       return
     }
 
+    const taskIdsToRetry = allTasks.map(task => task.id);
+
     setIsRetrying(true)
     try {
       let config = undefined
@@ -70,18 +73,23 @@ const ForceRetryAll: React.FC<ForceRetryAllProps> = ({ disabled = false }) => {
         }
       }
 
-      const result = await force_retry_all_tasks(config)
+      const result = await force_retry_all_tasks(taskIdsToRetry, config)
       
       if (result && result.retried_count > 0) {
-        // 更新前端状态，将所有重试的任务状态改为PENDING
-        allTasks.forEach(task => {
+        // 强制重试会重置所有任务，无论其当前状态如何
+        // 因此，我们应该更新所有任务的状态，而不仅仅是之前筛选的allTasks
+        logger.info(`✅ 强制重试成功，更新所有 ${tasks.length} 个任务的前端状态`)
+        tasks.forEach(task => {
           updateTaskContent(task.id, { status: 'PENDING' })
         })
         
+        toast.success(`成功将 ${result.retried_count} 个任务重新加入队列`)
         setIsOpen(false)
+      } else {
+        toast.info('没有任务需要重试，或者重试失败')
       }
     } catch (error) {
-      console.error('强制重试失败:', error)
+      logger.error('强制重试失败:', error)
     } finally {
       setIsRetrying(false)
     }
