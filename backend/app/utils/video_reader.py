@@ -54,8 +54,17 @@ class VideoReader:
             for ts in timestamps:
                 time_label = self.format_time(ts)
                 output_path = os.path.join(self.frame_dir, f"frame_{time_label}.jpg")
-                cmd = ["ffmpeg", "-ss", str(ts), "-i", self.video_path, "-frames:v", "1", "-q:v", "2", "-y", output_path,
-                       "-hide_banner", "-loglevel", "error"]
+                
+                # 修复ffmpeg参数顺序问题，将-ss移动到-i之后，以提高兼容性
+                cmd = ["ffmpeg", 
+                       "-i", self.video_path, 
+                       "-ss", str(ts), 
+                       "-frames:v", "1", 
+                       "-q:v", "2", 
+                       "-y", output_path,
+                       "-hide_banner", 
+                       "-loglevel", "error"]
+                
                 subprocess.run(cmd, check=True)
                 image_paths.append(output_path)
             return image_paths

@@ -1,7 +1,7 @@
 import axios from 'axios'
 const request = axios.create({
   baseURL: '/api',
-  timeout: 10000,
+  timeout: 30000,
 })
 function handleErrorResponse(response: any) {
   if (!response) return '请求失败，请检查网络连接'

@@ -571,7 +571,8 @@ class BaiduPCSService:
     def is_authenticated(self) -> bool:
         """检查是否已认证"""
         try:
-            success, stdout, stderr = self._run_baidupcs_command(['who'], timeout=10)
+            # 延长超时时间到20秒，以应对网络波动或BaiduPCS-Py响应慢的情况
+            success, stdout, stderr = self._run_baidupcs_command(['who'], timeout=30)
             
             # BaiduPCS-Py的who命令在没有默认用户时返回码可能是1，但仍有用户信息
             # 所以我们主要检查输出内容而不是返回码
