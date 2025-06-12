@@ -4,6 +4,7 @@
 """
 统一的百度网盘下载器
 基于BaiduPCS-Py命令行工具，支持baidu_pan://协议
+通过全局下载管理器确保串行下载
 """
 
 import os
@@ -15,6 +16,7 @@ from urllib.parse import unquote
 from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
 from app.models.notes_model import AudioDownloadResult
 from app.services.baidupcs_service import baidupcs_service
+from app.services.global_download_manager import global_download_manager
 from app.exceptions.auth_exceptions import AuthRequiredException
 from app.utils.logger import get_logger
 from app.utils.title_cleaner import smart_title_clean
@@ -27,6 +29,7 @@ class BaiduPCSDownloader(Downloader):
     """
     统一的百度网盘下载器
     基于BaiduPCS-Py命令行工具，支持baidu_pan://协议和多种链接格式
+    通过全局下载管理器确保串行下载
     """
     
     def __init__(self):
@@ -37,7 +40,7 @@ class BaiduPCSDownloader(Downloader):
         self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
         self.audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.ape', '.ac3', '.dts'}
         
-        logger.info("🔧 统一百度网盘下载器初始化完成")
+        logger.info("🔧 统一百度网盘下载器初始化完成（使用全局下载管理器）")
     
     # =============== 用户管理 ===============
     
@@ -177,10 +180,10 @@ class BaiduPCSDownloader(Downloader):
         """下载视频文件"""
         return self._download_file(url, download_path, quality, title, "video")
     
-    def _download_file(self, url: str, download_path: str, 
-                      quality: DownloadQuality, title: str = None, 
-                      file_type: str = "file") -> AudioDownloadResult:
-        """统一的文件下载方法"""
+    def _download_file_internal(self, url: str, download_path: str, 
+                               quality: DownloadQuality, title: str = None, 
+                               file_type: str = "file") -> AudioDownloadResult:
+        """内部下载方法 - 不通过全局管理器"""
         if not self.is_authenticated():
             raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
         
@@ -202,20 +205,33 @@ class BaiduPCSDownloader(Downloader):
             
             local_path = os.path.join(download_path, local_filename)
             
-            # 使用BaiduPCS服务下载
+            logger.info(f"🔧 调用BaiduPCS服务下载文件")
+            logger.info(f"   远程路径: {remote_path}")
+            logger.info(f"   本地路径: {local_path}")
+            
+            # 直接使用BaiduPCS服务下载（不通过队列）
             result = self.pcs_service.download_file(
                 remote_path=remote_path, 
                 local_path=local_path,
                 downloader="me",  # 使用推荐的me下载器
-                concurrency=5     # 5个并发连接
+                concurrency=5,    # 5个并发连接
+                wait_for_completion=True,  # 同步等待完成
+                timeout=1800      # 30分钟超时
             )
+            
+            logger.info(f"🔍 BaiduPCS服务返回结果:")
+            logger.info(f"   结果类型: {type(result)}")
+            logger.info(f"   结果内容: {result}")
+            logger.info(f"   success值: {result.get('success', 'N/A')}")
+            logger.info(f"   文件存在检查: {os.path.exists(local_path)}")
             
             if result.get("success", False) and os.path.exists(local_path):
                 file_size = os.path.getsize(local_path)
                 
                 logger.info(f"✅ {file_type}下载成功: {local_path}")
+                logger.info(f"📏 文件大小: {file_size} 字节")
                 
-                return AudioDownloadResult(
+                download_result = AudioDownloadResult(
                     file_path=local_path,
                     title=title or Path(local_filename).stem,
                     duration=0,  # BaiduPCS-Py可能不提供时长信息
@@ -230,9 +246,79 @@ class BaiduPCSDownloader(Downloader):
                     },
                     video_path=local_path if file_type == "video" else None
                 )
+                
+                logger.info(f"🎉 创建AudioDownloadResult对象:")
+                logger.info(f"   类型: {type(download_result)}")
+                logger.info(f"   文件路径: {download_result.file_path}")
+                logger.info(f"   标题: {download_result.title}")
+                logger.info(f"   平台: {download_result.platform}")
+                
+                return download_result
             else:
                 error_msg = result.get("message", "下载失败")
                 logger.error(f"❌ {file_type}下载失败: {error_msg}")
+                logger.error(f"   BaiduPCS结果success: {result.get('success', 'N/A')}")
+                logger.error(f"   文件存在: {os.path.exists(local_path)}")
+                raise Exception(error_msg)
+                
+        except Exception as e:
+            logger.error(f"❌ 下载{file_type}失败: {e}")
+            logger.error(f"   异常类型: {type(e)}")
+            raise e
+
+    def _download_file(self, url: str, download_path: str, 
+                      quality: DownloadQuality, title: str = None, 
+                      file_type: str = "file") -> AudioDownloadResult:
+        """统一的文件下载方法 - 通过全局下载管理器"""
+        if not self.is_authenticated():
+            raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
+        
+        try:
+            # 解析URL获取远程路径
+            remote_path = self._parse_url_to_path(url)
+            if not remote_path:
+                raise ValueError(f"无效的URL格式: {url}")
+            
+            # 生成本地文件名
+            if title:
+                clean_title = smart_title_clean(title)
+                ext = Path(remote_path).suffix
+                local_filename = f"{clean_title}{ext}"
+            else:
+                local_filename = Path(remote_path).name
+            
+            local_path = os.path.join(download_path, local_filename)
+            
+            logger.info(f"🌍 通过全局下载管理器下载: {remote_path}")
+            
+            # 通过全局下载管理器执行下载
+            task_id = global_download_manager.add_download_task(
+                "baidu_pan", url, local_path, self._download_file_internal,
+                url, download_path, quality, title, file_type
+            )
+            
+            # 等待下载完成
+            result = global_download_manager.wait_for_completion(task_id, timeout=1800)
+            
+            if result.get("success", False):
+                download_result = result.get("result")
+                if download_result:
+                    return download_result
+                else:
+                    # 如果没有返回AudioDownloadResult，创建一个
+                    return AudioDownloadResult(
+                        file_path=local_path,
+                        title=title or Path(local_filename).stem,
+                        duration=0,
+                        cover_url=None,
+                        platform="baidu_pan",
+                        video_id=Path(local_filename).stem,
+                        raw_info={"download_method": "global_manager"},
+                        video_path=local_path if file_type == "video" else None
+                    )
+            else:
+                error_msg = result.get("message", "下载失败")
+                logger.error(f"❌ 全局下载管理器下载失败: {error_msg}")
                 raise Exception(error_msg)
                 
         except Exception as e:

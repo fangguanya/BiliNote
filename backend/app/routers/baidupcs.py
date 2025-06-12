@@ -634,4 +634,129 @@ def get_usage_guide():
                 "optional_fields": ["STOKEN", "PSTM", "BAIDUID", "PASSID"]
             }
         }
-    }) 
+    })
+
+# =============== 任务队列管理接口 ===============
+
+@router.get("/queue/status")
+def get_queue_status():
+    """获取下载队列状态"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        queue_info = baidupcs_service.get_queue_info()
+        return R.success(queue_info)
+        
+    except Exception as e:
+        logger.error(f"❌ 获取队列状态失败: {e}")
+        return R.error(f"获取队列状态失败: {str(e)}", code=500)
+
+
+@router.get("/task/{task_id}/status")
+def get_task_status(task_id: str):
+    """获取特定任务状态"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        status = baidupcs_service.get_task_status(task_id)
+        if not status:
+            return R.error("任务不存在", code=404)
+        
+        return R.success(status)
+        
+    except Exception as e:
+        logger.error(f"❌ 获取任务状态失败: {e}")
+        return R.error(f"获取任务状态失败: {str(e)}", code=500)
+
+
+@router.post("/task/{task_id}/cancel")
+def cancel_task(task_id: str):
+    """取消下载任务"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        success = baidupcs_service.cancel_task(task_id)
+        if success:
+            return R.success({"message": "任务已取消", "task_id": task_id})
+        else:
+            return R.error("无法取消任务", code=400)
+        
+    except Exception as e:
+        logger.error(f"❌ 取消任务失败: {e}")
+        return R.error(f"取消任务失败: {str(e)}", code=500)
+
+
+@router.post("/download_async")
+def download_file_async(request: DownloadRequest):
+    """异步下载文件"""
+    try:
+        if not baidupcs_service.is_authenticated():
+            return R.error("未认证，请先添加用户", code=401)
+        
+        # 使用异步下载模式
+        result = baidupcs_service.download_file(
+            remote_path=request.remote_path,
+            local_path=request.local_path,
+            wait_for_completion=False
+        )
+        
+        return R.success(result)
+        
+    except AuthRequiredException as e:
+        return R.error("认证已过期，请重新添加用户", code=401)
+    except Exception as e:
+        logger.error(f"❌ 异步下载失败: {e}")
+        return R.error(f"异步下载失败: {str(e)}", code=500)
+
+
+# =============== 全局下载管理接口 ===============
+
+@router.get("/global/download/status")
+def get_global_download_status():
+    """获取全局下载状态"""
+    try:
+        from app.services.global_download_manager import global_download_manager
+        
+        status = global_download_manager.get_global_status()
+        return R.success(status)
+        
+    except Exception as e:
+        logger.error(f"❌ 获取全局下载状态失败: {e}")
+        return R.error(f"获取全局下载状态失败: {str(e)}", code=500)
+
+
+@router.get("/global/task/{task_id}/status")
+def get_global_task_status(task_id: str):
+    """获取全局任务状态"""
+    try:
+        from app.services.global_download_manager import global_download_manager
+        
+        status = global_download_manager.get_task_status(task_id)
+        if not status:
+            return R.error("任务不存在", code=404)
+        
+        return R.success(status)
+        
+    except Exception as e:
+        logger.error(f"❌ 获取全局任务状态失败: {e}")
+        return R.error(f"获取全局任务状态失败: {str(e)}", code=500)
+
+
+@router.post("/global/task/{task_id}/cancel")
+def cancel_global_task(task_id: str):
+    """取消全局下载任务"""
+    try:
+        from app.services.global_download_manager import global_download_manager
+        
+        success = global_download_manager.cancel_task(task_id)
+        if success:
+            return R.success({"message": "任务已取消", "task_id": task_id})
+        else:
+            return R.error("无法取消任务", code=400)
+        
+    except Exception as e:
+        logger.error(f"❌ 取消全局任务失败: {e}")
+        return R.error(f"取消全局任务失败: {str(e)}", code=500) 
