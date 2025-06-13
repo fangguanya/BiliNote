@@ -44,7 +44,9 @@ class VideoReader:
         return float('inf')
 
     def extract_frames(self, max_frames=1000) -> list[str]:
-
+        """
+        从视频中提取帧，支持多种ffmpeg参数组合和错误处理
+        """
         try:
             os.makedirs(self.frame_dir, exist_ok=True)
             duration = float(ffmpeg.probe(self.video_path)["format"]["duration"])
@@ -55,18 +57,44 @@ class VideoReader:
                 time_label = self.format_time(ts)
                 output_path = os.path.join(self.frame_dir, f"frame_{time_label}.jpg")
                 
-                # 修复ffmpeg参数顺序问题，将-ss移动到-i之后，以提高兼容性
-                cmd = ["ffmpeg", 
-                       "-i", self.video_path, 
-                       "-ss", str(ts), 
-                       "-frames:v", "1", 
-                       "-q:v", "2", 
-                       "-y", output_path,
-                       "-hide_banner", 
-                       "-loglevel", "error"]
+                # 尝试不同的ffmpeg命令组合
+                commands = [
+                    # 方案1: 使用严格模式和像素格式
+                    ["ffmpeg", "-strict", "-2", "-i", self.video_path, "-ss", str(ts), 
+                     "-frames:v", "1", "-q:v", "2", "-pix_fmt", "yuvj420p", 
+                     "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", 
+                     "-y", output_path, "-hide_banner", "-loglevel", "error"],
+                    
+                    # 方案2: 使用原始命令
+                    ["ffmpeg", "-i", self.video_path, "-ss", str(ts), 
+                     "-frames:v", "1", "-q:v", "2", "-y", output_path, 
+                     "-hide_banner", "-loglevel", "error"],
+                    
+                    # 方案3: 使用不同的像素格式
+                    ["ffmpeg", "-i", self.video_path, "-ss", str(ts), 
+                     "-frames:v", "1", "-q:v", "2", "-pix_fmt", "rgb24", 
+                     "-y", output_path, "-hide_banner", "-loglevel", "error"],
+                    
+                    # 方案4: 简化命令
+                    ["ffmpeg", "-i", self.video_path, "-ss", str(ts), 
+                     "-frames:v", "1", "-y", output_path]
+                ]
                 
-                subprocess.run(cmd, check=True)
-                image_paths.append(output_path)
+                success = False
+                for i, cmd in enumerate(commands):
+                    try:
+                        logger.info(f"尝试方案{i+1}提取帧 {time_label}")
+                        subprocess.run(cmd, check=True, stderr=subprocess.PIPE)
+                        image_paths.append(output_path)
+                        success = True
+                        break
+                    except subprocess.CalledProcessError as e:
+                        logger.warning(f"方案{i+1}失败: {e}")
+                        continue
+                
+                if not success:
+                    logger.error(f"无法提取时间点 {time_label} 的帧，尝试了所有方案")
+                    
             return image_paths
         except Exception as e:
             logger.error(f"分割帧发生错误：{str(e)}")
