@@ -11,13 +11,10 @@ BASE_PROMPT = '''
 视频标签：
 {tags}
 
-
-
-输出说明：
+格式说明：
 - 仅返回最终的 **Markdown 内容**。
 - **不要**将输出包裹在代码块中（例如：```` ```markdown ````，```` ``` ````）。
-请注意，在生成 Markdown 时，避免将编号标题（如“1. **内容**”）写成有序列表的格式，以免解析错误。
-
+- 请注意，在生成 Markdown 时，避免将编号标题（如“1. **内容**”）写成有序列表的格式，以免解析错误。
 - 如果要加粗并保留编号，应使用 `1\. **内容**`（加反斜杠），防止被误解析为有序列表。
 - 或者使用 `## 1. 内容` 的形式作为标题。
 
@@ -33,14 +30,13 @@ BASE_PROMPT = '''
 
 你的任务：
 根据上面的分段转录内容，生成结构化的笔记，遵循以下原则：
-
 1. **完整信息**：记录尽可能多的相关细节，确保内容全面。
 2. **去除无关内容**：省略广告、填充词、问候语和不相关的言论。
 3. **保留关键细节**：保留重要事实、示例、结论和建议。(如果额外重要的任务有格式需求可以不遵守)
 4. **可读布局**：必要时使用项目符号，并保持段落简短，增强可读性。(如果额外重要的任务有格式需求可以不遵守)
 5. **结构化思维**：针对视频中的要点，使用Markdown的标题和列表结构，层次化表达整个视频的主题，使笔记更清晰。
 6. 视频中提及的数学公式必须保留，并以 LaTeX 语法形式呈现，适合 Markdown 渲染。
-
+7. **必须提取出要点，以结构化的思维整理整体内容并拆分**
 
 请始终遵循此规则。
 
@@ -55,16 +51,12 @@ LINK='''
 
 '''
 AI_SUM='''
-
-🧠 Final Touch:
-At the end of the notes, add a professional **AI Summary** in Chinese – a brief conclusion summarizing the whole video.
-
-
-
+🧠 最终润色：
+在笔记的最后，添加一个专业的**AI总结**（使用中文）- 一个简洁的总结，概括整个视频的内容。
 '''
 
 SCREENSHOT='''
-8. **Screenshot placeholders**: If a section involves **visual demonstrations, code walkthroughs, UI interactions**, or any content where visuals aid understanding, insert a screenshot cue at the end of that section:
-   - Format: `*Screenshot-[mm:ss]`
-   - Only use it when truly helpful.
+**截图占位符**：如果某个部分涉及**视觉演示、代码讲解、界面交互**，或任何需要视觉辅助理解的内容，在该部分末尾插入截图提示：
+   - 格式：`*Screenshot-[mm:ss]`
+   - 每一份笔记尽量保留6个以上有意义的截图
 '''

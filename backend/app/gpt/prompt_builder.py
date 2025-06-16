@@ -30,12 +30,14 @@ def generate_base_prompt(title, segment_text, tags, _format=None, style=None, ex
     )
 
     # 添加用户选择的格式
-    if _format:
-        prompt += "\n" + "\n".join([get_format_function(f) for f in _format])
+    _format = ['summary','screenshot', 'toc']
+    #if _format:
+    prompt += "\n" + "\n".join([get_format_function(f) for f in _format])
 
     # 根据用户选择的笔记风格添加描述
-    if style:
-        prompt += "\n" + get_style_format(style)
+    style = 'detailed'
+    #if style:
+    prompt += "\n" + get_style_format(style)
 
     # 添加额外内容
     if extras:
@@ -105,11 +107,11 @@ def get_screenshot_format():
     return '''
 11. **原片截图**:你收到的截图一般是一个网格，网格的每张图片就是一个时间点，左上角会包含时间mm:ss的格式，请你结合我发你的图片插入截图提示，请你帮助用户更好的理解视频内容，请你认真的分析每个图片和对应的转写文案，插入最合适的内容来备注用户理解，请一定按照这个格式 返回否则系统无法解析：
 - 格式：`*Screenshot-[mm:ss]`
-
+- 每一份笔记尽量保留6个以上有意义的截图
     '''
 
 
 def get_summary_format():
     return '''
-    12. **AI总结**: 在笔记末尾加入简短的AI生成总结,并且二级标题 就是 AI 总结 例如 ## AI 总结。
+    12. **AI总结**: 在笔记末尾加入简短的AI生成总结，提炼核心内容，并形成多条信息总结
     '''
