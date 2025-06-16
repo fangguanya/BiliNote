@@ -1,5 +1,7 @@
 import json
 from dataclasses import asdict
+import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import HTTPException
 
@@ -45,6 +47,8 @@ from dotenv import load_dotenv
 from app.utils.logger import get_logger
 from app.utils.video_reader import VideoReader
 from events import transcription_finished
+
+import cv2
 
 logger = get_logger(__name__)
 load_dotenv()
@@ -228,16 +232,74 @@ class NoteGenerator:
                         self.video_path = video_path
                         logger.info(f"成功下载视频文件: {video_path}")
 
-                        video_img_urls = VideoReader(
-                            video_path=video_path,
-                            grid_size=tuple(grid_size),
-                            frame_interval=video_interval,
-                            unit_width=960,
-                            unit_height=540,
-                            save_quality=60,
-                        ).run()
+                        if video_understanding:
+                            import ffmpeg
+                            logger.info("开始提取视频帧用于视频理解...")
+                            try:
+                                probe = ffmpeg.probe(video_path)
+                                duration = float(probe['format']['duration'])
+                                
+                                # 在视频开头和结尾附近留出一些边距
+                                start_time = 1
+                                end_time = duration - 1
+                                if end_time <= start_time:
+                                    end_time = duration # 如果视频很短
+
+                                # 最多提取20帧
+                                num_frames = 20
+                                timestamps = [start_time + i * (end_time - start_time) / (num_frames - 1) for i in range(num_frames)]
+                                
+                                temp_frame_dir = os.path.join(NOTE_OUTPUT_DIR, task_id, "frames")
+                                os.makedirs(temp_frame_dir, exist_ok=True)
+                                
+                                logger.info(f"将从视频中提取 {len(timestamps)} 帧。")
+
+                                def extract_and_encode_frame(ts, index):
+                                    try:
+                                        # 直接在内存中获取和处理帧
+                                        with VideoReader(video_path) as reader:
+                                            frame = reader.get_frame(ts, scale=0.5)
+                                        
+                                        if frame is not None:
+                                            # 在内存中将帧编码为JPG
+                                            success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                            if success:
+                                                encoded_string = base64.b64encode(buffer).decode("utf-8")
+                                                return f"data:image/jpeg;base64,{encoded_string}"
+                                            else:
+                                                logger.warning(f"在内存中编码帧失败 at {ts}s.")
+                                    except Exception as e:
+                                        import traceback
+                                        logger.error(f"提取或编码帧 at {ts}s 失败: {e} {traceback.format_exc()}")
+                                    return None
+
+                                total_size_mb = 0
+                                max_size_mb = 4.0 # 限制总大小为4MB
+                                
+                                with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+                                    future_to_ts = {executor.submit(extract_and_encode_frame, ts, i): ts for i, ts in enumerate(timestamps)}
+                                    for future in as_completed(future_to_ts):
+                                        base64_image = future.result()
+                                        if base64_image:
+                                            img_size_mb = len(base64_image.split(',')[1]) * 3 / 4 / (1024 * 1024)
+                                            if total_size_mb + img_size_mb <= max_size_mb:
+                                                video_img_urls.append(base64_image)
+                                                total_size_mb += img_size_mb
+                                            else:
+                                                logger.warning(f"已达到图像总大小限制({max_size_mb}MB)，停止添加更多帧。")
+                                                # 取消剩余的 future
+                                                for fut in future_to_ts:
+                                                    fut.cancel()
+                                                break
+                                logger.info(f"成功提取并编码 {len(video_img_urls)} 帧图像，总大小: {total_size_mb:.2f}MB")
+
+                            except Exception as e:
+                                logger.error(f"处理视频帧时出错: {e}", exc_info=True)
+                                # 即使帧提取失败，也继续执行后续流程
+                                pass
+
                     except Exception as e:
-                        logger.error(f"Error 下载视频失败，task_id={task_id}，错误信息：{e}")
+                        logger.error(f"Error 下载视频失败，task_id={task_id}，错误信息：{e}", exc_info=True)
                         
                         # 检查是否为认证异常
                         if isinstance(e, AuthRequiredException):

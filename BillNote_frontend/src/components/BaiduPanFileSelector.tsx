@@ -64,6 +64,30 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   
   // 存储清理函数的引用
   const cleanupRef = useRef<(() => void) | null>(null)
+  
+  // 保存当前路径到localStorage
+  const saveCurrentPath = (path: string) => {
+    try {
+      localStorage.setItem('baiduPanLastPath', path)
+      console.log('💾 已保存百度网盘路径:', path)
+    } catch (error) {
+      console.error('❌ 保存路径失败:', error)
+    }
+  }
+
+  // 获取上次路径
+  const getLastPath = (): string => {
+    try {
+      const lastPath = localStorage.getItem('baiduPanLastPath')
+      if (lastPath) {
+        console.log('🔍 恢复上次路径:', lastPath)
+        return lastPath
+      }
+    } catch (error) {
+      console.error('❌ 获取上次路径失败:', error)
+    }
+    return '/'
+  }
 
   // 检查认证状态
   const checkAuthStatus = async () => {
@@ -80,7 +104,25 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
         
         if (isAuth) {
           console.log('✅ 已认证，开始加载文件列表')
-          await loadFiles('/')
+          // 加载上次的路径
+          const lastPath = getLastPath()
+          await loadFiles(lastPath)
+          setPathHistory(['/'])
+          if (lastPath !== '/') {
+            // 如果不是根路径，需要更新路径历史
+            setPathHistory(prev => {
+              const pathParts = lastPath.split('/').filter(Boolean)
+              let currentPath = ''
+              const newHistory = ['/']
+              
+              for (const part of pathParts) {
+                currentPath += '/' + part
+                newHistory.push(currentPath)
+              }
+              
+              return newHistory
+            })
+          }
         } else {
           // 认证失败，清空文件列表
           console.log('❌ 未认证，清空文件列表')
@@ -120,6 +162,8 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
         setFiles(result.files)
         setMediaCount(result.media_count || 0)
         setCurrentPath(path)
+        // 保存当前路径到localStorage
+        saveCurrentPath(path)
         console.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件`)
       } else {
         console.warn('⚠️ 文件列表结果格式异常:', result)
