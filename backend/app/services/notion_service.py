@@ -1222,7 +1222,8 @@ class NotionService:
                         "content": code
                     }
                 }],
-                "language": clean_language
+                #"language": clean_language
+                "language": 'javascript'
             }
         }
     
