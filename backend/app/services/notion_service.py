@@ -785,7 +785,7 @@ class NotionService:
                     current_paragraph = []
                 
                 # 解析代码块
-                language = line[3:].strip() or 'text'  # 获取语言，默认为text
+                language = line[3:].strip() or 'javascript'  # 获取语言，默认为text
                 code_lines = []
                 
                 # 查找代码块结束
@@ -1175,7 +1175,7 @@ class NotionService:
             }
         }
     
-    def _create_code_block(self, code: str, language: str = "plain text") -> Dict[str, Any]:
+    def _create_code_block(self, code: str, language: str = "javascript") -> Dict[str, Any]:
         """
         创建代码块
         
