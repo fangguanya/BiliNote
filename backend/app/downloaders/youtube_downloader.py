@@ -35,9 +35,13 @@ class YoutubeDownloader(Downloader, ABC):
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
         ydl_opts = {
+            #'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            # 修改：使用更灵活的格式选择，避免某些视频格式不可用的问题
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'outtmpl': output_path,
-            'noplaylist': True,
+            'noplaylist': False,  # 修改：允许下载播放列表
+            'no_warnings': False,
+            'extract_flat': False,
             'quiet': False,
         }
 
@@ -67,6 +71,52 @@ class YoutubeDownloader(Downloader, ABC):
         )
 
     def download_video(
+            self,
+            video_url: str,
+            output_dir: Union[str, None] = None,
+        ) -> str:
+        """
+        下载视频，返回视频文件路径
+        """
+        if output_dir is None:
+            output_dir = get_data_dir()
+        
+        os.makedirs(output_dir, exist_ok=True)
+        output_template = os.path.join(output_dir, "%(id)s.%(ext)s")
+
+        ydl_opts = {
+            # 修改：使用更灵活的格式选择
+            # 优先下载mp4格式的视频，如果不可用则自动选择最佳可用格式
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best',
+            'outtmpl': output_template,
+            'quiet': False,
+            'no_warnings': False,
+            'extract_flat': False,
+            'merge_output_format': 'mp4',  # 合并后的格式为mp4
+        }
+
+        actual_video_path = None
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # 提取信息并下载
+            info = ydl.extract_info(video_url, download=True)
+            
+            # 使用 yt-dlp 的 prepare_filename 方法获取实际文件路径
+            actual_video_path = ydl.prepare_filename(info)
+            
+            # 如果文件有后缀处理（如合并后），需要替换扩展名
+            if 'ext' in info:
+                base_path = os.path.splitext(actual_video_path)[0]
+                actual_video_path = f"{base_path}.{info['ext']}"
+
+        # 检查文件是否存在
+        if not os.path.exists(actual_video_path):
+            raise FileNotFoundError(f"视频文件未找到: {actual_video_path}")
+
+        return actual_video_path
+
+
+    def download_video1(
         self,
         video_url: str,
         output_dir: Union[str, None] = None,
@@ -77,26 +127,28 @@ class YoutubeDownloader(Downloader, ABC):
         if output_dir is None:
             output_dir = get_data_dir()
         video_id = extract_video_id(video_url, "youtube")
-        video_path = os.path.join(output_dir, f"{video_id}.mp4")
-        if os.path.exists(video_path):
-            return video_path
+        #video_path = os.path.join(output_dir, f"{video_id}.mp4")
+        #if os.path.exists(video_path):
+        #    return video_path
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "%(id)s.%(ext)s")
 
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+            #'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+            'format': 'best[ext=mp4]/best',
             'outtmpl': output_path,
-            'noplaylist': True,
+            #'noplaylist': True,
             'quiet': False,
-            'merge_output_format': 'mp4',  # 确保合并成 mp4
+            'no_warnings': False,
+            'extract_flat': False,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=True)
             video_id = info.get("id")
-            video_path = os.path.join(output_dir, f"{video_id}.mp4")
+            #video_path = os.path.join(output_dir, f"{video_id}.mp4")
 
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"视频文件未找到: {video_path}")
+        if not os.path.exists(output_path):
+            raise FileNotFoundError(f"视频文件未找到: {output_path}")
 
-        return video_path
+        return output_path

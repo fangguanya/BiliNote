@@ -55,6 +55,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [mediaCount, setMediaCount] = useState(0)
+  const [recursive, setRecursive] = useState(false)
   
   // 登录相关状态
   const [showLoginDialog, setShowLoginDialog] = useState(false)
@@ -154,8 +155,8 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   const loadFiles = async (path: string) => {
     setLoading(true)
     try {
-      console.log('🗂️ 开始加载文件列表:', path)
-      const result = await getBaiduPanFileList(path)
+      console.log('🗂️ 开始加载文件列表:', path, 'recursive:', recursive)
+      const result = await getBaiduPanFileList(path, undefined, undefined, recursive)
       console.log('📋 文件列表结果:', result)
       
       if (result && result.files) {
@@ -520,6 +521,29 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                 >
                   <RefreshCwIcon className="w-3 h-3" />
                 </Button>
+                
+                {/* 递归选项 */}
+                <div className="flex items-center gap-2 ml-4">
+                  <input
+                    type="checkbox"
+                    id="recursive-mode"
+                    checked={recursive}
+                    onChange={(e) => {
+                      setRecursive(e.target.checked)
+                      // 状态改变后自动重新加载文件列表
+                      if (authenticated && currentPath) {
+                        setTimeout(() => loadFiles(currentPath), 100)
+                      }
+                    }}
+                    className="w-4 h-4 cursor-pointer"
+                  />
+                  <label 
+                    htmlFor="recursive-mode" 
+                    className="text-xs text-gray-600 cursor-pointer select-none"
+                  >
+                    包含子目录
+                  </label>
+                </div>
               </div>
 
               {/* 文件统计和批量选择 */}

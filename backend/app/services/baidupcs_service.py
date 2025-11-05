@@ -91,6 +91,10 @@ class BaiduPCSService:
         self._queue_lock = threading.Lock()
         self._is_processing = False
         
+        # 文件列表缓存（优化性能）
+        self._file_list_cache: Dict[str, Tuple[List[Dict], float]] = {}
+        self._cache_ttl = 60  # 缓存60秒
+        
         # 启动任务队列工作线程
         self._start_queue_worker()
     
@@ -787,16 +791,36 @@ class BaiduPCSService:
                 "error_type": "exception"
             }
     
-    def get_file_list(self, path: str = "/") -> Dict[str, Any]:
-        """获取文件列表 - 使用正确的 BaiduPCS-Py 命令参数"""
+    def get_file_list(self, path: str = "/", use_cache: bool = True, recursive: bool = False) -> Dict[str, Any]:
+        """
+        获取文件列表 - 使用正确的 BaiduPCS-Py 命令参数
+        
+        Args:
+            path: 目录路径
+            use_cache: 是否使用缓存（默认True，可提高性能）
+            recursive: 是否递归获取子目录（默认False）
+        """
         try:
             if not self.is_authenticated():
                 return {"success": False, "message": "用户未认证"}
             
+            # 检查缓存
+            if use_cache and path in self._file_list_cache:
+                cached_files, cache_time = self._file_list_cache[path]
+                if time.time() - cache_time < self._cache_ttl:
+                    logger.info(f"🎯 使用缓存的文件列表: {path} (缓存{int(time.time() - cache_time)}秒前)")
+                    return {"success": True, "files": cached_files}
+            
+            # 构建命令参数
+            cmd_args = ['ls']
+            if recursive:
+                cmd_args.append('-R')  # 递归列出子目录
+            cmd_args.append(path)
+            
             # 根据 BaiduPCS-Py 官方文档，ls 命令的正确用法是：
             # BaiduPCS-Py ls [OPTIONS] [REMOTEPATHS]...
-            # 先尝试最基本的 ls 命令，不使用可能不存在的参数
-            success, stdout, stderr = self._run_baidupcs_command(['ls', path], timeout=30)
+            # 使用较短的超时时间以提高响应速度
+            success, stdout, stderr = self._run_baidupcs_command(cmd_args, timeout=15)  # 缩短到15秒
             
             # 对于 ls 命令，即使返回码非0，只要有输出内容就可能是成功的
             if not success and not stdout.strip():
@@ -895,6 +919,12 @@ class BaiduPCSService:
                     continue
             
             logger.info(f"✅ 解析文件列表成功，共 {len(files)} 个项目")
+            
+            # 缓存结果
+            if use_cache:
+                self._file_list_cache[path] = (files, time.time())
+                logger.debug(f"💾 已缓存文件列表: {path}")
+            
             return {"success": True, "files": files}
                 
         except Exception as e:

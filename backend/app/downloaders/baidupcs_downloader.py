@@ -61,8 +61,18 @@ class BaiduPCSDownloader(Downloader):
     
     # =============== 文件管理 ===============
     
-    def get_file_list(self, path: str = "/", share_code: str = None, extract_code: str = None) -> List[Dict[str, any]]:
-        """获取文件列表"""
+    def get_file_list(self, path: str = "/", share_code: str = None, extract_code: str = None, 
+                      use_cache: bool = True, recursive: bool = False) -> List[Dict[str, any]]:
+        """
+        获取文件列表
+        
+        Args:
+            path: 目录路径
+            share_code: 分享码（暂不支持）
+            extract_code: 提取码（暂不支持）
+            use_cache: 是否使用缓存（默认True，可大幅提高性能）
+            recursive: 是否递归获取子目录（默认False）
+        """
         if not self.is_authenticated():
             raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
         
@@ -70,7 +80,7 @@ class BaiduPCSDownloader(Downloader):
         if share_code or extract_code:
             logger.warning("⚠️ 当前版本不支持分享链接，只能获取个人文件列表")
         
-        result = self.pcs_service.get_file_list(path)
+        result = self.pcs_service.get_file_list(path, use_cache=use_cache, recursive=recursive)
         if result.get("success", False):
             return result.get("files", [])
         return []

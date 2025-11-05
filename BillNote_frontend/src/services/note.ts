@@ -346,11 +346,12 @@ export const getBaiduPanAuthStatus = async () => {
 }
 
 // 获取百度网盘文件列表
-export const getBaiduPanFileList = async (path: string = "/", shareCode?: string, extractCode?: string) => {
+export const getBaiduPanFileList = async (path: string = "/", shareCode?: string, extractCode?: string, recursive?: boolean) => {
   try {
     const params: any = { path }
     if (shareCode) params.share_code = shareCode
     if (extractCode) params.extract_code = extractCode
+    if (recursive !== undefined) params.recursive = recursive
     
     const response = await request.get('/baidu_pan/file_list', { params })
     

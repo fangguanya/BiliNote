@@ -126,12 +126,12 @@ const NoteForm = () => {
       platform: 'bilibili',
       quality: 'medium',
       model_name: modelList[0]?.model_name || '',
-      style: 'academic',
+      style: 'detailed',  // 修改：笔记风格改为详细
       video_interval: 4,
       grid_size: [3, 3],
-      format: ['summary'],
+      format: ['summary', 'toc', 'screenshot'],  // 修改：默认勾选AI总结、目录、原片截图
       max_collection_videos: 400,
-      auto_save_notion: true,
+      auto_save_notion: true,  // 修改：默认勾选自动保存到Notion
       auto_detect_collection: true,
       screenshot: true,
       link: true,
@@ -157,7 +157,7 @@ const NoteForm = () => {
       platform: formData.platform || 'bilibili',
       video_url: formData.video_url || '',
       model_name: formData.model_name || modelList[0]?.model_name || '',
-      style: formData.style || 'academic',
+      style: formData.style || 'detailed',  // 修改：默认风格改为详细
       quality: formData.quality || 'medium',
       extras: formData.extras || '',
       screenshot: formData.screenshot ?? true,
@@ -165,10 +165,10 @@ const NoteForm = () => {
       video_understanding: formData.video_understanding ?? true,
       video_interval: formData.video_interval ?? 4,
       grid_size: formData.grid_size ?? [3, 3],
-      format: formData.format ?? ['summary'],
+      format: formData.format ?? ['summary', 'toc', 'screenshot'],  // 修改：默认勾选AI总结、目录、原片截图
       max_collection_videos: formData.max_collection_videos ?? 400,
-      auto_save_notion: formData.auto_save_notion ?? true,
-      auto_detect_collection: formData.auto_detect_collection ?? true,
+      auto_save_notion: formData.auto_save_notion ?? true,  // 修改：默认勾选自动保存到Notion
+      auto_detect_collection: true,
     })
   }, [currentTaskId, modelList.length, currentTask?.formData])
 

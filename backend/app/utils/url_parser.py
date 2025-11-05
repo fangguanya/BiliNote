@@ -227,6 +227,23 @@ def is_collection_url(url: str, platform: str) -> bool:
         logger.info("❌ 不是抖音合集链接")
         return False
     
+    elif platform == "youtube":
+        # YouTube播放列表检测
+        collection_patterns = [
+            r"[?&]list=",                         # 播放列表参数
+            r"/playlist\?",                       # 播放列表URL
+            r"/watch\?.*list=",                   # 观看页面带播放列表
+        ]
+        
+        for i, pattern in enumerate(collection_patterns):
+            if re.search(pattern, url):
+                pattern_names = ["播放列表参数", "播放列表URL", "播放列表"]
+                logger.info(f"✅ 检测到YouTube{pattern_names[i]}链接: {pattern}")
+                return True
+        
+        logger.info("❌ 不是YouTube播放列表链接")
+        return False
+    
     elif platform == "baidu_pan":
         # 百度网盘合集检测模式
         collection_patterns = [
@@ -266,6 +283,8 @@ def extract_collection_videos(url: str, platform: str, max_videos: int = 50) -> 
     
     if platform == "bilibili":
         return _extract_bilibili_collection_videos(url, max_videos)
+    elif platform == "youtube":
+        return _extract_youtube_playlist_videos(url, max_videos)
     elif platform == "douyin":
         return _extract_douyin_collection_videos(url, max_videos)
     elif platform == "baidu_pan":
@@ -1120,3 +1139,100 @@ def extract_baidu_pan_collection_videos(url: str, max_videos: int = 50) -> List[
     except Exception as e:
         logger.error(f"❌ 提取百度网盘媒体文件失败: {e}")
         return []
+
+
+def _extract_youtube_playlist_videos(url: str, max_videos: int = 50) -> List[Tuple[str, str]]:
+    """
+    提取YouTube播放列表中的视频
+    
+    :param url: YouTube播放列表链接
+    :param max_videos: 最大视频数量
+    :return: [(video_url, title), ...] 列表
+    """
+    logger.info(f"🎬 开始提取YouTube播放列表: {url}")
+    videos = []
+    
+    try:
+        # 使用yt-dlp提取播放列表信息
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,  # 只提取URL，不下载
+            'socket_timeout': 15,
+            'retries': 1,
+            'noplaylist': False,  # 强制提取播放列表
+            'yes_playlist': True,  # 明确要求处理播放列表
+        }
+        
+        # 如果URL包含list参数，尝试优化URL格式以确保提取播放列表
+        import re
+        list_match = re.search(r'[?&]list=([^&]+)', url)
+        if list_match:
+            list_id = list_match.group(1)
+            # 优先使用播放列表URL格式
+            playlist_url = f"https://www.youtube.com/playlist?list={list_id}"
+            logger.info(f"🔄 使用播放列表URL格式: {playlist_url}")
+            extract_url = playlist_url
+        else:
+            extract_url = url
+        
+        logger.info("🔄 使用yt-dlp提取播放列表...")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(extract_url, download=False)
+            
+            if info and 'entries' in info and len(info.get('entries', [])) > 0:
+                # 这是一个播放列表
+                entries_count = len([e for e in info['entries'] if e])  # 过滤None条目
+                logger.info(f"✅ yt-dlp检测到播放列表，包含 {entries_count} 个视频")
+                
+                for entry in info['entries'][:max_videos]:
+                    if entry:
+                        video_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                        title = entry.get('title', '未知标题')
+                        
+                        # 如果只有ID，构造完整URL
+                        if video_url and not video_url.startswith('http'):
+                            video_url = f"https://www.youtube.com/watch?v={video_url}"
+                        
+                        if video_url:
+                            videos.append((video_url, title))
+                            logger.info(f"📹 找到视频: {title}")
+                        
+                logger.info(f"✅ YouTube播放列表提取成功，获得 {len(videos)} 个视频")
+            else:
+                # 不是播放列表，可能是单个视频
+                # 但如果原URL包含list参数，说明可能是播放列表提取失败
+                if list_match:
+                    logger.warning(f"⚠️ URL包含list参数但未能提取播放列表，可能是空播放列表或私有播放列表")
+                    # 尝试作为单个视频处理
+                    if info and info.get('id'):
+                        video_id = info.get('id')
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                        title = info.get('title', '未知标题')
+                        videos.append((video_url, title))
+                        logger.info(f"📹 回退到单个视频: {title}")
+                else:
+                    # 确实是单个视频
+                    logger.info("📺 这不是播放列表，返回单个视频")
+                    if info:
+                        # 尝试多种方式获取视频URL和标题
+                        video_url = info.get('webpage_url') or info.get('url') or url
+                        title = info.get('title', '未知标题')
+                        
+                        if video_url:
+                            # 清理URL，移除播放列表参数
+                            import re
+                            video_url = re.sub(r'[&?]list=[^&]*', '', video_url)
+                            video_url = re.sub(r'[&?]index=[^&]*', '', video_url)
+                            videos.append((video_url, title))
+                            logger.info(f"📹 单个视频: {title}")
+                    
+    except Exception as e:
+        logger.error(f"❌ 提取YouTube播放列表失败: {e}")
+        # 尝试将URL作为单个视频返回
+        try:
+            videos.append((url, "未知标题"))
+        except:
+            pass
+    
+    return videos

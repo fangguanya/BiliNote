@@ -267,7 +267,9 @@ def get_file_list(
     path: str = Query("/", description="目录路径"),
     order: str = Query("time", description="排序方式: time/name/size"),
     desc: bool = Query(True, description="是否降序"),
-    media_only: bool = Query(False, description="是否只显示媒体文件")
+    media_only: bool = Query(False, description="是否只显示媒体文件"),
+    recursive: bool = Query(False, description="是否递归列出子目录"),
+    use_cache: bool = Query(True, description="是否使用缓存")
 ):
     """获取文件列表"""
     try:
@@ -275,7 +277,7 @@ def get_file_list(
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPCSDownloader()
-        files = downloader.get_file_list(path)
+        files = downloader.get_file_list(path, use_cache=use_cache, recursive=recursive)
         
         # 如果只要媒体文件，进行过滤
         if media_only:
