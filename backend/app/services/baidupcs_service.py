@@ -77,11 +77,34 @@ class BaiduPCSFile:
 class BaiduPCSService:
     """BaiduPCS统一服务类 - 使用正确的命令行参数，支持任务队列"""
     
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """实现单例模式，避免多次初始化导致的性能问题"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        # 避免重复初始化
+        if hasattr(self, '_initialized'):
+            return
+        
         self._check_baidupcs_command()
         # 支持的媒体文件扩展名
-        self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
-        self.audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.ape', '.ac3', '.dts'}
+        self.video_extensions = {
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', 
+            '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', 
+            '.rmvb', '.rm', '.mpg', '.mpeg', '.vob', '.asf'
+            # 注意：.ass 是字幕文件，不是视频文件
+        }
+        self.audio_extensions = {
+            '.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', 
+            '.m4a', '.ape', '.ac3', '.dts'
+        }
         
         # 任务队列相关
         self._download_queue = queue.Queue()
@@ -95,8 +118,17 @@ class BaiduPCSService:
         self._file_list_cache: Dict[str, Tuple[List[Dict], float]] = {}
         self._cache_ttl = 60  # 缓存60秒
         
+        # 认证状态缓存（优化性能，避免频繁执行who命令）
+        self._auth_cache: Optional[bool] = None
+        self._auth_cache_time: float = 0
+        self._auth_cache_ttl = 300  # 认证状态缓存5分钟
+        
         # 启动任务队列工作线程
         self._start_queue_worker()
+        
+        # 标记已初始化
+        self._initialized = True
+        logger.info("✅ BaiduPCSService单例初始化完成")
     
     def _start_queue_worker(self):
         """启动任务队列工作线程"""
@@ -572,11 +604,30 @@ class BaiduPCSService:
                 'quota_usage_percent': 0.0
             }
     
-    def is_authenticated(self) -> bool:
-        """检查是否已认证"""
+    def clear_auth_cache(self):
+        """清除认证状态缓存（在登录/登出时调用）"""
+        self._auth_cache = None
+        self._auth_cache_time = 0
+        logger.debug("🧹 已清除认证状态缓存")
+    
+    def is_authenticated(self, force_check: bool = False) -> bool:
+        """
+        检查是否已认证
+        
+        Args:
+            force_check: 是否强制检查（忽略缓存）
+        """
         try:
-            # 延长超时时间到20秒，以应对网络波动或BaiduPCS-Py响应慢的情况
-            success, stdout, stderr = self._run_baidupcs_command(['who'], timeout=30)
+            # 检查缓存
+            if not force_check and self._auth_cache is not None:
+                cache_age = time.time() - self._auth_cache_time
+                if cache_age < self._auth_cache_ttl:
+                    logger.debug(f"🎯 使用认证状态缓存 (缓存{int(cache_age)}秒前): {self._auth_cache}")
+                    return self._auth_cache
+            
+            # 执行实际检查，使用较短的超时时间
+            logger.debug("🔍 执行认证状态检查...")
+            success, stdout, stderr = self._run_baidupcs_command(['who'], timeout=10)
             
             # BaiduPCS-Py的who命令在没有默认用户时返回码可能是1，但仍有用户信息
             # 所以我们主要检查输出内容而不是返回码
@@ -588,7 +639,10 @@ class BaiduPCSService:
             )
             
             logger.debug(f"🔍 认证检查 - 返回码: {success}, 有用户信息: {has_user_info}")
-            logger.debug(f"🔍 输出内容: {stdout[:200]}...")
+            
+            # 更新缓存
+            self._auth_cache = has_user_info
+            self._auth_cache_time = time.time()
             
             if has_user_info:
                 logger.info("✅ 用户已认证")
@@ -601,6 +655,7 @@ class BaiduPCSService:
                 
         except Exception as e:
             logger.error(f"❌ 认证检查失败: {e}")
+            # 出错时不更新缓存，返回False
             return False
     
     def add_user_by_cookies(self, cookies: str) -> Dict[str, Any]:
@@ -614,6 +669,8 @@ class BaiduPCSService:
             
             if success:
                 logger.info(f"✅ 用户添加成功")
+                # 清除认证缓存，强制重新检查
+                self.clear_auth_cache()
                 return {"success": True, "message": "用户添加成功"}
             else:
                 error_msg = stderr or stdout or "未知错误"
@@ -622,6 +679,8 @@ class BaiduPCSService:
                 # 检查是否是因为用户已存在
                 if "already exist" in error_msg.lower() or "已存在" in error_msg:
                     logger.info("⚠️ 用户可能已存在，尝试检查当前用户")
+                    # 清除缓存后重新检查
+                    self.clear_auth_cache()
                     if self.is_authenticated():
                         return {"success": True, "message": "用户已存在且已认证"}
                 
@@ -643,6 +702,8 @@ class BaiduPCSService:
             
             if success:
                 logger.info(f"✅ 用户添加成功")
+                # 清除认证缓存，强制重新检查
+                self.clear_auth_cache()
                 return {"success": True, "message": "用户添加成功"}
             else:
                 error_msg = stderr or stdout or "未知错误"
@@ -651,6 +712,8 @@ class BaiduPCSService:
                 # 检查是否是因为用户已存在
                 if "already exist" in error_msg.lower() or "已存在" in error_msg:
                     logger.info("⚠️ 用户可能已存在，尝试检查当前用户")
+                    # 清除缓存后重新检查
+                    self.clear_auth_cache()
                     if self.is_authenticated():
                         return {"success": True, "message": "用户已存在且已认证"}
                 
@@ -804,11 +867,12 @@ class BaiduPCSService:
             if not self.is_authenticated():
                 return {"success": False, "message": "用户未认证"}
             
-            # 检查缓存
-            if use_cache and path in self._file_list_cache:
-                cached_files, cache_time = self._file_list_cache[path]
+            # 检查缓存 - 缓存key需要包含recursive参数
+            cache_key = f"{path}|recursive={recursive}"
+            if use_cache and cache_key in self._file_list_cache:
+                cached_files, cache_time = self._file_list_cache[cache_key]
                 if time.time() - cache_time < self._cache_ttl:
-                    logger.info(f"🎯 使用缓存的文件列表: {path} (缓存{int(time.time() - cache_time)}秒前)")
+                    logger.info(f"🎯 使用缓存的文件列表: {path} (recursive={recursive}, 缓存{int(time.time() - cache_time)}秒前)")
                     return {"success": True, "files": cached_files}
             
             # 构建命令参数
@@ -820,13 +884,21 @@ class BaiduPCSService:
             # 根据 BaiduPCS-Py 官方文档，ls 命令的正确用法是：
             # BaiduPCS-Py ls [OPTIONS] [REMOTEPATHS]...
             # 使用较短的超时时间以提高响应速度
+            logger.info(f"🔍 获取文件列表: {path} (recursive={recursive})")
+            logger.info(f"📋 执行命令: BaiduPCS-Py {' '.join(cmd_args)}")
             success, stdout, stderr = self._run_baidupcs_command(cmd_args, timeout=15)  # 缩短到15秒
             
             # 对于 ls 命令，即使返回码非0，只要有输出内容就可能是成功的
-            if not success and not stdout.strip():
-                error_msg = stderr or "获取文件列表失败"
-                logger.error(f"❌ 获取文件列表失败: {error_msg}")
-                return {"success": False, "message": f"获取文件列表失败: {error_msg}"}
+            # BaiduPCS-Py在某些情况下即使成功也会返回非0状态码
+            if not success:
+                if stdout.strip():
+                    # 有输出内容，可能是成功的，只是返回码异常
+                    logger.debug(f"⚠️ ls命令返回码非0但有输出内容，继续解析")
+                else:
+                    # 没有输出内容，确实失败了
+                    error_msg = stderr or "获取文件列表失败"
+                    logger.error(f"❌ 获取文件列表失败: {error_msg}")
+                    return {"success": False, "message": f"获取文件列表失败: {error_msg}"}
             
             if not stdout.strip():
                 logger.info("📁 目录为空")
@@ -835,25 +907,58 @@ class BaiduPCSService:
             # 解析 BaiduPCS-Py ls 命令的实际输出格式
             files = []
             lines = stdout.split('\n')
-            logger.debug(f"🔍 解析文件列表输出，共 {len(lines)} 行")
-            logger.debug(f"🔍 原始输出:\n{stdout}")
+            logger.info(f"🔍 解析文件列表输出，共 {len(lines)} 行")
+            # 记录完整输出用于诊断（临时调试）
+            logger.info(f"🔍 完整原始输出:\n{'='*80}\n{stdout}\n{'='*80}")
+            if stderr:
+                logger.info(f"⚠️ 错误输出:\n{stderr}")
+            
+            # 递归模式下，需要追踪当前目录
+            current_dir = path
             
             for i, line in enumerate(lines):
                 original_line = line
-                line = line.strip()
-                if not line:
+                line_stripped = line.strip()
+                if not line_stripped:
                     continue
                 
+                # 在递归模式下，目录路径会单独显示（如：/path/to/dir:）
+                # 改进：更严格的目录路径识别
+                if recursive:
+                    # 检查是否是目录路径标记行
+                    # 格式：/完整/路径:
+                    # 必须以 / 开头，以 : 结尾，且中间不包含特殊的文件格式前缀
+                    if (line_stripped.startswith('/') and 
+                        line_stripped.endswith(':') and 
+                        not line_stripped.startswith('d ') and 
+                        not line_stripped.startswith('- ')):
+                        # 这是一个新的目录路径
+                        current_dir = line_stripped[:-1]  # 移除末尾的冒号
+                        logger.info(f"📁 递归模式 - 切换到目录: {current_dir}")
+                        continue
+                
+                # 使用原始行的strip版本进行后续处理
+                line = line_stripped
+                
                 # 跳过表头、路径显示和分隔符
-                if (line.startswith('─') or 
-                    line.startswith('=') or
-                    line == 'Path' or
-                    line.startswith('  Path') or
-                    line == path or  # 跳过路径显示行
-                    line.startswith('总计') or
-                    line.startswith('共') or
-                    'items' in line.lower()):
-                    logger.debug(f"⏭️ 跳过表头行: {line}")
+                # 改进：添加更多跳过条件，避免误判
+                skip_patterns = [
+                    line.startswith('─'),
+                    line.startswith('='),
+                    line == 'Path',
+                    line.startswith('  Path'),
+                    line == path,  # 跳过路径显示行
+                    line.startswith('总计'),
+                    line.startswith('共'),
+                    'items' in line.lower(),
+                    line.startswith('Size'),  # 跳过 Size 列标题
+                    line.startswith('Modified'),  # 跳过 Modified 列标题
+                    line.startswith('Path:'),  # 跳过 Path: 显示
+                    line.endswith('个文件') or line.endswith('folders'),  # 跳过统计行
+                ]
+                
+                if any(skip_patterns):
+                    logger.debug(f"⏭️ 跳过表头/统计行 [{i}]: {line}")
                     continue
                 
                 try:
@@ -868,30 +973,48 @@ class BaiduPCSService:
                         # 目录
                         is_dir = True
                         filename = line[2:].strip()
+                        # 递归模式下，文件名可能包含相对路径，只取最后的文件名
+                        if recursive and '/' in filename:
+                            original_filename = filename
+                            filename = os.path.basename(filename)
+                            logger.info(f"🔧 [{i}] 提取纯目录名: '{original_filename}' -> '{filename}'")
+                        logger.debug(f"🔵 识别为目录 [{i}]: '{filename}'")
                     elif line.startswith('- '):
                         # 文件
                         is_dir = False
                         filename = line[2:].strip()
+                        # 递归模式下，文件名可能包含相对路径，只取最后的文件名
+                        if recursive and '/' in filename:
+                            original_filename = filename
+                            filename = os.path.basename(filename)
+                            logger.info(f"🔧 [{i}] 提取纯文件名: '{original_filename}' -> '{filename}'")
+                        logger.debug(f"📄 识别为文件 [{i}]: '{filename}'")
                     else:
-                        # 其他格式，直接当作文件名处理
-                        filename = line
-                        is_dir = False
+                        # 其他格式，可能是没有前缀的文件名或者是需要跳过的行
+                        # 改进：更谨慎地处理，记录日志但不一定解析
+                        logger.warning(f"⚠️ 未知格式 [{i}]: '{line}' (原始: '{original_line}')")
+                        # 跳过不识别的行，避免误判
+                        continue
                     
                     # 如果文件名为空，跳过
                     if not filename:
-                        logger.debug(f"⏭️ 跳过空文件名行: {original_line}")
+                        logger.debug(f"⏭️ 跳过空文件名行 [{i}]: {original_line}")
                         continue
+                    
+                    # 验证文件名是否合理（不应该是路径）
+                    if filename.count('/') > 0:
+                        logger.warning(f"⚠️ 文件名包含路径分隔符，可能解析错误 [{i}]: '{filename}'")
+                        # 继续处理，但记录警告
                     
                     # 生成 fs_id (使用文件名的哈希)
                     fs_id = f"file_{abs(hash(filename)) % 1000000}"
                     
-                    # 构建文件路径
-                    if path == '/':
-                        file_path = f"/{filename}"
-                    elif path.endswith('/'):
-                        file_path = f"{path}{filename}"
-                    else:
-                        file_path = f"{path}/{filename}"
+                    # 构建文件路径（递归模式下使用current_dir，非递归模式使用path）
+                    # 改进：使用 os.path.join 确保路径正确
+                    base_path = current_dir if recursive else path
+                    file_path = os.path.join(base_path, filename).replace('\\', '/')
+                    
+                    logger.info(f"📁 [{i}] 构建路径: base='{base_path}', name='{filename}', path='{file_path}', recursive={recursive}")
                     
                     # 判断是否为媒体文件
                     is_media = not is_dir and self._is_media_file(filename)
@@ -912,7 +1035,7 @@ class BaiduPCSService:
                     }
                     
                     files.append(file_info)
-                    logger.debug(f"✅ 解析文件: '{filename}' (dir: {is_dir}, media: {is_media})")
+                    logger.info(f"✅ 解析文件 [{i}]: '{filename}' -> '{file_path}' (dir: {is_dir}, media: {is_media}, base_path: {base_path})")
                 
                 except Exception as parse_error:
                     logger.warning(f"⚠️ 解析文件行失败 {i}: '{original_line}', 错误: {parse_error}")
@@ -920,10 +1043,10 @@ class BaiduPCSService:
             
             logger.info(f"✅ 解析文件列表成功，共 {len(files)} 个项目")
             
-            # 缓存结果
+            # 缓存结果 - 使用包含recursive的缓存key
             if use_cache:
-                self._file_list_cache[path] = (files, time.time())
-                logger.debug(f"💾 已缓存文件列表: {path}")
+                self._file_list_cache[cache_key] = (files, time.time())
+                logger.debug(f"💾 已缓存文件列表: {path} (recursive={recursive})")
             
             return {"success": True, "files": files}
                 
@@ -933,8 +1056,23 @@ class BaiduPCSService:
     
     def _is_media_file(self, filename: str) -> bool:
         """判断是否为媒体文件"""
+        logger.info(f"🔍 检查媒体文件: '{filename}'")
+        
+        # 提取扩展名
         file_ext = os.path.splitext(filename)[1].lower()
-        return file_ext in self.video_extensions or file_ext in self.audio_extensions
+        logger.info(f"   📌 扩展名: '{file_ext}'")
+        
+        # 检查是否为视频或音频
+        is_video = file_ext in self.video_extensions
+        is_audio = file_ext in self.audio_extensions
+        is_media = is_video or is_audio
+        
+        logger.info(f"   {'✅' if is_media else '❌'} 是视频: {is_video}, 是音频: {is_audio}, 结果: {is_media}")
+        
+        if not is_media:
+            logger.info(f"   ℹ️ 支持的视频扩展名: {sorted(self.video_extensions)}")
+        
+        return is_media
     
     def upload_file(self, local_path: str, remote_path: str) -> Dict[str, Any]:
         """上传文件"""

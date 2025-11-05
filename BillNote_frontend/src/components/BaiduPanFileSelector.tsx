@@ -152,11 +152,13 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   }
 
   // 加载文件列表
-  const loadFiles = async (path: string) => {
+  const loadFiles = async (path: string, forceRecursive?: boolean) => {
     setLoading(true)
     try {
-      console.log('🗂️ 开始加载文件列表:', path, 'recursive:', recursive)
-      const result = await getBaiduPanFileList(path, undefined, undefined, recursive)
+      // 使用传入的recursive参数，如果没有传入则使用state中的recursive
+      const useRecursive = forceRecursive !== undefined ? forceRecursive : recursive
+      console.log('🗂️ 开始加载文件列表:', path, 'recursive:', useRecursive)
+      const result = await getBaiduPanFileList(path, undefined, undefined, useRecursive)
       console.log('📋 文件列表结果:', result)
       
       if (result && result.files) {
@@ -529,10 +531,30 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                     id="recursive-mode"
                     checked={recursive}
                     onChange={(e) => {
-                      setRecursive(e.target.checked)
+                      const newRecursiveValue = e.target.checked
+                      setRecursive(newRecursiveValue)
                       // 状态改变后自动重新加载文件列表
+                      // 注意：不能直接使用recursive变量，因为状态更新是异步的
                       if (authenticated && currentPath) {
-                        setTimeout(() => loadFiles(currentPath), 100)
+                        // 临时保存新的recursive值，传递给API
+                        setTimeout(() => {
+                          console.log('🔄 递归模式切换:', newRecursiveValue)
+                          // 使用新的值重新加载
+                          setLoading(true)
+                          getBaiduPanFileList(currentPath, undefined, undefined, newRecursiveValue)
+                            .then(result => {
+                              if (result && result.files) {
+                                setFiles(result.files)
+                                setMediaCount(result.media_count || 0)
+                                console.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件`)
+                              }
+                              setLoading(false)
+                            })
+                            .catch(error => {
+                              console.error('❌ 加载文件列表失败:', error)
+                              setLoading(false)
+                            })
+                        }, 100)
                       }
                     }}
                     className="w-4 h-4 cursor-pointer"
@@ -590,9 +612,10 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                     {files.map((file) => (
                       <Card
                         key={file.fs_id}
-                        className={`cursor-pointer transition-colors ${
-                          file.is_dir ? 'hover:bg-blue-50' : 
-                          file.is_media ? 'hover:bg-green-50' : 'hover:bg-gray-50'
+                        className={`transition-colors ${
+                          file.is_dir ? 'cursor-pointer hover:bg-blue-50' : 
+                          file.is_media ? 'cursor-pointer hover:bg-green-50' : 
+                          'cursor-not-allowed opacity-60 hover:bg-gray-50'
                         } ${selectedFiles.some(sf => sf.fs_id === file.fs_id) ? 'bg-blue-100' : ''}`}
                         onClick={() => {
                           if (file.is_dir) {

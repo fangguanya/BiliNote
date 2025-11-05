@@ -1863,12 +1863,18 @@ def batch_clear_reset_tasks(request: BatchClearResetRequest):
         return R.error(f"批量清空重置任务失败: {str(e)}")
 
 @router.get("/baidu_pan/file_list")
-def get_baidu_pan_file_list(path: str = "/", share_code: str = None, extract_code: str = None):
+def get_baidu_pan_file_list(
+    path: str = "/", 
+    share_code: str = None, 
+    extract_code: str = None,
+    recursive: bool = False,
+    use_cache: bool = True
+):
     """获取百度网盘文件列表 - 使用BaiduPCS-Py"""
     try:
         from app.downloaders.baidupcs_downloader import BaiduPCSDownloader
         
-        logger.info(f"🗂️ 获取百度网盘文件列表: path={path}, share_code={share_code}")
+        logger.info(f"🗂️ 获取百度网盘文件列表: path={path}, share_code={share_code}, recursive={recursive}, use_cache={use_cache}")
         
         downloader = BaiduPCSDownloader()
         
@@ -1878,7 +1884,13 @@ def get_baidu_pan_file_list(path: str = "/", share_code: str = None, extract_cod
         
         # 获取文件列表
         try:
-            file_list = downloader.get_file_list(path=path, share_code=share_code, extract_code=extract_code)
+            file_list = downloader.get_file_list(
+                path=path, 
+                share_code=share_code, 
+                extract_code=extract_code,
+                use_cache=use_cache,
+                recursive=recursive
+            )
         except Exception as download_error:
             logger.error(f"❌ 获取百度网盘文件列表失败: {download_error}")
             return R.error(f"获取文件列表失败: {str(download_error)}", code=500)
