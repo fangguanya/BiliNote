@@ -610,6 +610,25 @@ class BaiduPCSService:
         self._auth_cache_time = 0
         logger.debug("🧹 已清除认证状态缓存")
     
+    def clear_file_list_cache(self, path: str = None):
+        """
+        清除文件列表缓存
+        
+        Args:
+            path: 如果指定，只清除特定路径的缓存；否则清除所有缓存
+        """
+        if path:
+            # 清除特定路径的所有缓存（包括recursive和非recursive）
+            keys_to_remove = [k for k in self._file_list_cache.keys() if k.startswith(path)]
+            for key in keys_to_remove:
+                del self._file_list_cache[key]
+            logger.info(f"🗑️ 已清除路径 '{path}' 的文件列表缓存 ({len(keys_to_remove)} 个)")
+        else:
+            # 清除所有缓存
+            count = len(self._file_list_cache)
+            self._file_list_cache.clear()
+            logger.info(f"🗑️ 已清除所有文件列表缓存 ({count} 个)")
+    
     def is_authenticated(self, force_check: bool = False) -> bool:
         """
         检查是否已认证
@@ -867,6 +886,10 @@ class BaiduPCSService:
             if not self.is_authenticated():
                 return {"success": False, "message": "用户未认证"}
             
+            # 强制不使用缓存（临时修复：确保获取最新数据）
+            #logger.info(f"⚡ 强制清除缓存以获取最新文件列表")
+            #self.clear_file_list_cache(path)
+            
             # 检查缓存 - 缓存key需要包含recursive参数
             cache_key = f"{path}|recursive={recursive}"
             if use_cache and cache_key in self._file_list_cache:
@@ -904,12 +927,39 @@ class BaiduPCSService:
                 logger.info("📁 目录为空")
                 return {"success": True, "files": []}
             
+            # 关键修复：BaiduPCS-Py在显示长路径时会插入换行符！
+            # 需要先清理这些换行符，然后再按行解析
+            # 策略：将所有连续的 \n + 空格 替换为空字符串
+            import re
+            
+            # 先记录原始输出
+            logger.info(f"🔍 原始输出长度: {len(stdout)} 字符")
+            logger.debug(f"🔍 原始输出前500字符:\n{repr(stdout[:500])}")
+            
+            # 清理换行符的策略：
+            # 1. 首先保护真正的行分隔符（目录标记行、文件行、表格线）
+            # 2. 将剩余的所有 \n 都删除（这些是显示换行，不是逻辑换行）
+            
+            # 标记真正的行分隔符：在它们前面添加特殊标记
+            cleaned_stdout = re.sub(r'\n(d )', r'<<LINE_BREAK>>\1', stdout)  # 目录行
+            cleaned_stdout = re.sub(r'\n(- )', r'<<LINE_BREAK>>\1', cleaned_stdout)  # 文件行
+            cleaned_stdout = re.sub(r'\n(───)', r'<<LINE_BREAK>>\1', cleaned_stdout)  # 表格线
+            cleaned_stdout = re.sub(r'\n(  Path)', r'<<LINE_BREAK>>\1', cleaned_stdout)  # 表头
+            cleaned_stdout = re.sub(r'\n(/)', r'<<LINE_BREAK>>\1', cleaned_stdout)  # 目录路径行（以/开头）
+            
+            # 删除所有剩余的 \n（这些都是显示换行）
+            cleaned_stdout = cleaned_stdout.replace('\n', '')
+            
+            # 恢复真正的行分隔符
+            cleaned_stdout = cleaned_stdout.replace('<<LINE_BREAK>>', '\n')
+            
+            logger.info(f"🧹 清理后输出长度: {len(cleaned_stdout)} 字符")
+            logger.debug(f"🔍 清理后输出前500字符:\n{repr(cleaned_stdout[:500])}")
+            
             # 解析 BaiduPCS-Py ls 命令的实际输出格式
             files = []
-            lines = stdout.split('\n')
+            lines = cleaned_stdout.split('\n')
             logger.info(f"🔍 解析文件列表输出，共 {len(lines)} 行")
-            # 记录完整输出用于诊断（临时调试）
-            logger.info(f"🔍 完整原始输出:\n{'='*80}\n{stdout}\n{'='*80}")
             if stderr:
                 logger.info(f"⚠️ 错误输出:\n{stderr}")
             
@@ -922,18 +972,18 @@ class BaiduPCSService:
                 if not line_stripped:
                     continue
                 
-                # 在递归模式下，目录路径会单独显示（如：/path/to/dir:）
+                # 在递归模式下，目录路径会单独显示（如：/path/to/dir 或 /path/to/dir:）
                 # 改进：更严格的目录路径识别
                 if recursive:
                     # 检查是否是目录路径标记行
-                    # 格式：/完整/路径:
-                    # 必须以 / 开头，以 : 结尾，且中间不包含特殊的文件格式前缀
+                    # 格式：/完整/路径 或 /完整/路径:
+                    # 必须以 / 开头，不能是文件/目录行前缀
                     if (line_stripped.startswith('/') and 
-                        line_stripped.endswith(':') and 
                         not line_stripped.startswith('d ') and 
                         not line_stripped.startswith('- ')):
                         # 这是一个新的目录路径
-                        current_dir = line_stripped[:-1]  # 移除末尾的冒号
+                        # 移除末尾的冒号（如果有）
+                        current_dir = line_stripped.rstrip(':')
                         logger.info(f"📁 递归模式 - 切换到目录: {current_dir}")
                         continue
                 
