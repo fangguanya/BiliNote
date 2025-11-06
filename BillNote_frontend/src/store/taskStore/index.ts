@@ -70,6 +70,38 @@ export interface Task {
   }
 }
 
+// 辅助函数：精简任务数据以减少存储空间
+// 策略：
+// 1. 只保留 transcript.full_text，删除 segments（segments 数据量很大）
+// 2. 只保留 markdown 文本，如果是数组则只保留第一个
+// 3. 删除 raw_info 等大型对象
+const compactTask = (task: Task): Task => {
+  return {
+    ...task,
+    // 精简 transcript：只保留 full_text，删除 segments
+    transcript: {
+      full_text: task.transcript?.full_text || '',
+      language: task.transcript?.language || '',
+      raw: null, // 删除原始数据
+      segments: [], // 删除分段数据（占用空间最大）
+    },
+    // 精简 markdown：如果是数组，只保留第一个
+    markdown: Array.isArray(task.markdown) 
+      ? (task.markdown.length > 0 ? task.markdown[0].content : '')
+      : task.markdown,
+    // 精简 audioMeta：删除 raw_info
+    audioMeta: {
+      ...task.audioMeta,
+      raw_info: null, // 删除原始信息
+    }
+  }
+}
+
+// 辅助函数：批量精简任务
+const compactTasks = (tasks: Task[]): Task[] => {
+  return tasks.map(compactTask)
+}
+
 interface TaskStore {
   tasks: Task[]
   currentTaskId: string | null
@@ -78,6 +110,7 @@ interface TaskStore {
   updateTaskContent: (id: string, data: Partial<Omit<Task, 'id' | 'createdAt'>>) => void
   removeTask: (id: string) => void
   clearTasks: () => void
+  compactAllTasks: () => void // 新增：手动精简所有任务数据
   setCurrentTask: (taskId: string | null) => void
   getCurrentTask: () => Task | null
   retryTask: (id: string, payload?: any) => void
@@ -119,7 +152,7 @@ export const useTaskStore = create<TaskStore>()(
             },
             ...state.tasks,
           ],
-          currentTaskId: taskId, // 默认设置为当前任务
+          currentTaskId: taskId,
         })),
 
       addPendingTasks: (taskList: Array<{task_id: string, video_url: string, title: string}>, platform: string, formData: any) =>
@@ -193,14 +226,28 @@ export const useTaskStore = create<TaskStore>()(
                   ]
                 }
 
-                return {
+                const updatedTask = {
                   ...task,
                   ...data,
                   markdown: updatedMarkdown,
                 }
+                
+                // 如果任务完成，精简数据以节省存储空间
+                if (data.status === 'SUCCESS') {
+                  return compactTask(updatedTask)
+                }
+                
+                return updatedTask
               }
 
-              return { ...task, ...data }
+              const updatedTask = { ...task, ...data }
+              
+              // 如果任务完成，精简数据以节省存储空间
+              if (data.status === 'SUCCESS') {
+                return compactTask(updatedTask)
+              }
+              
+              return updatedTask
             }),
           })),
 
@@ -265,6 +312,14 @@ export const useTaskStore = create<TaskStore>()(
 
       clearTasks: () => set({ tasks: [], currentTaskId: null }),
 
+      compactAllTasks: () => 
+        set(state => {
+          const compactedTasks = compactTasks(state.tasks)
+          const savedBytes = JSON.stringify(state.tasks).length - JSON.stringify(compactedTasks).length
+          console.log(`🗜️ 精简所有任务数据完成，节省 ${(savedBytes / 1024).toFixed(2)} KB`)
+          return { tasks: compactedTasks }
+        }),
+
       setCurrentTask: taskId => set({ currentTaskId: taskId }),
 
       updateTaskNotion: (taskId: string, notionData: NonNullable<Task['notion']>) =>
@@ -278,6 +333,85 @@ export const useTaskStore = create<TaskStore>()(
     }),
     {
       name: 'task-storage',
+      // 添加存储错误处理
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          const sizeKB = (JSON.stringify(state.tasks).length / 1024).toFixed(2)
+          console.log(`📦 任务存储已加载: ${sizeKB} KB, ${state.tasks.length} 个任务`)
+          
+          // 如果存储过大（超过4MB），自动精简
+          if (JSON.stringify(state.tasks).length > 4 * 1024 * 1024) {
+            console.warn('⚠️ 任务存储过大，自动精简...')
+            const compactedTasks = compactTasks(state.tasks)
+            state.tasks = compactedTasks
+            const newSize = (JSON.stringify(state.tasks).length / 1024).toFixed(2)
+            console.log(`✅ 精简完成: ${newSize} KB`)
+          }
+        }
+      },
+      // 添加存储错误处理
+      storage: {
+        getItem: (name) => {
+          const value = localStorage.getItem(name)
+          return value ? JSON.parse(value) : null
+        },
+        setItem: (name, value) => {
+          try {
+            localStorage.setItem(name, JSON.stringify(value))
+          } catch (error) {
+            // localStorage 配额超限
+            if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+              console.error('❌ localStorage 配额超限，尝试自动清理...')
+              
+              // 尝试精简任务数据
+              if (value?.state?.tasks) {
+                const compactedTasks = compactTasks(value.state.tasks)
+                const compactedValue = {
+                  ...value,
+                  state: {
+                    ...value.state,
+                    tasks: compactedTasks
+                  }
+                }
+                
+                try {
+                  localStorage.setItem(name, JSON.stringify(compactedValue))
+                  console.log('✅ 自动精简成功，数据已保存')
+                  
+                  // 显示用户友好的提示
+                  const event = new CustomEvent('storage-quota-exceeded', {
+                    detail: { 
+                      message: '存储空间不足，已自动精简任务数据。建议定期清理旧任务。',
+                      autoFixed: true
+                    }
+                  })
+                  window.dispatchEvent(event)
+                  
+                  return
+                } catch (retryError) {
+                  console.error('❌ 精简后仍然超限')
+                }
+              }
+              
+              // 如果精简后还是失败，显示错误提示
+              const event = new CustomEvent('storage-quota-exceeded', {
+                detail: { 
+                  message: '存储空间不足！请在控制台运行 useTaskStore.getState().clearTasks() 清理任务，或删除部分旧任务。',
+                  autoFixed: false
+                }
+              })
+              window.dispatchEvent(event)
+              
+              throw error
+            } else {
+              throw error
+            }
+          }
+        },
+        removeItem: (name) => {
+          localStorage.removeItem(name)
+        },
+      },
     }
   )
 )
