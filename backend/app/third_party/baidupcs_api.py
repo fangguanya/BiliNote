@@ -475,12 +475,23 @@ class BaiduPCSDownloader:
             # 列出文件
             pcs_files = self.api.list(path)
             
+            # 定义媒体文件扩展名
+            video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
+            audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.ape', '.ac3', '.dts'}
+            
             files = []
             for pcs_file in pcs_files:
+                filename = os.path.basename(pcs_file.path)
+                file_ext = os.path.splitext(filename)[1].lower()
+                
+                # 判断是否为媒体文件
+                is_media = (file_ext in video_extensions or file_ext in audio_extensions) and not pcs_file.is_dir
+                
                 file_info = {
                     'path': pcs_file.path,
-                    'filename': os.path.basename(pcs_file.path),
+                    'filename': filename,
                     'is_dir': pcs_file.is_dir,
+                    'is_media': is_media,
                     'size': pcs_file.size,
                     'fs_id': pcs_file.fs_id,
                     'md5': pcs_file.md5,
