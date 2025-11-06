@@ -285,46 +285,71 @@ class NoteGenerator:
                                         temp_frame_dir = os.path.join(NOTE_OUTPUT_DIR, task_id, "frames")
                                         os.makedirs(temp_frame_dir, exist_ok=True)
                                         
-                                        logger.info(f"将从视频中提取 {len(timestamps)} 帧。")
-
+                                        logger.info(f"🎬 开始提取 {len(timestamps)} 帧...")
+                                        
+                                        # 创建共享的VideoReader（避免重复打开视频）
+                                        video_reader = VideoReader(video_path)
+                                        
                                         def extract_and_encode_frame(ts, index):
                                             try:
-                                                # 直接在内存中获取和处理帧
-                                                with VideoReader(video_path) as reader:
-                                                    frame = reader.get_frame(ts, scale=0.5)
+                                                # 使用共享的VideoReader
+                                                frame = video_reader.get_frame(ts, scale=0.5)
                                                 
                                                 if frame is not None:
-                                                    # 在内存中将帧编码为JPG
-                                                    success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                                    # 在内存中将帧编码为JPG，使用更高的压缩率
+                                                    success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                                                     if success:
                                                         encoded_string = base64.b64encode(buffer).decode("utf-8")
-                                                        return f"data:image/jpeg;base64,{encoded_string}"
+                                                        return (index, f"data:image/jpeg;base64,{encoded_string}")
                                                     else:
-                                                        logger.warning(f"在内存中编码帧失败 at {ts}s.")
+                                                        logger.warning(f"⚠️ 编码帧失败 at {ts}s")
                                             except Exception as e:
-                                                import traceback
-                                                logger.error(f"提取或编码帧 at {ts}s 失败: {e} {traceback.format_exc()}")
-                                            return None
+                                                logger.error(f"❌ 提取帧失败 at {ts}s: {e}")
+                                            return (index, None)
 
                                         total_size_mb = 0
-                                        max_size_mb = 4.0 # 限制总大小为4MB
+                                        max_size_mb = 50.0  # 提高限制到50MB（约1000-1500帧）
+                                        extracted_count = 0
                                         
-                                        with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-                                            future_to_ts = {executor.submit(extract_and_encode_frame, ts, i): ts for i, ts in enumerate(timestamps)}
+                                        # 使用更多线程加速
+                                        max_workers = min(32, os.cpu_count() * 4)
+                                        
+                                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                                            future_to_ts = {executor.submit(extract_and_encode_frame, ts, i): (ts, i) for i, ts in enumerate(timestamps)}
+                                            
+                                            # 按顺序收集结果
+                                            results = [None] * len(timestamps)
+                                            completed = 0
+                                            
                                             for future in as_completed(future_to_ts):
-                                                base64_image = future.result()
+                                                index, base64_image = future.result()
+                                                completed += 1
+                                                
+                                                # 每完成10%显示进度
+                                                if completed % max(1, len(timestamps) // 10) == 0:
+                                                    progress = (completed / len(timestamps)) * 100
+                                                    logger.info(f"⏳ 提取进度: {completed}/{len(timestamps)} ({progress:.0f}%)")
+                                                
                                                 if base64_image:
                                                     img_size_mb = len(base64_image.split(',')[1]) * 3 / 4 / (1024 * 1024)
                                                     if total_size_mb + img_size_mb <= max_size_mb:
-                                                        video_img_urls.append(base64_image)
+                                                        results[index] = base64_image
                                                         total_size_mb += img_size_mb
+                                                        extracted_count += 1
                                                     else:
-                                                        logger.warning(f"已达到图像总大小限制({max_size_mb}MB)，停止添加更多帧。")
+                                                        logger.warning(f"⚠️ 已达到图像总大小限制({max_size_mb}MB)，停止添加更多帧")
                                                         # 取消剩余的 future
                                                         for fut in future_to_ts:
                                                             fut.cancel()
                                                         break
-                                        logger.info(f"成功提取并编码 {len(video_img_urls)} 帧图像，总大小: {total_size_mb:.2f}MB")
+                                            
+                                            # 过滤掉None值，保持顺序
+                                            video_img_urls = [img for img in results if img is not None]
+                                        
+                                        # 关闭VideoReader
+                                        video_reader.release()
+                                        
+                                        logger.info(f"✅ 成功提取 {extracted_count} 帧，总大小: {total_size_mb:.2f}MB")
 
                                 except Exception as e:
                                     logger.error(f"处理视频帧时出错: {e}", exc_info=True)
