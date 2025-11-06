@@ -289,6 +289,7 @@ class NoteGenerator:
                                         
                                         # 创建共享的VideoReader（避免重复打开视频）
                                         video_reader = VideoReader(video_path)
+                                        video_reader.__enter__()  # 手动打开视频文件
                                         
                                         def extract_and_encode_frame(ts, index):
                                             try:

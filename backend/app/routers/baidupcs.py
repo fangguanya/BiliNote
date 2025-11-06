@@ -13,11 +13,14 @@ from pydantic import BaseModel
 from app.utils.response import ResponseWrapper as R
 from app.utils.logger import get_logger
 from app.downloaders.baidupcs_downloader import BaiduPCSDownloader, BaiduPanDownloader
-from app.services.baidupcs_service import baidupcs_service
+from app.third_party.baidupcs_api import BaiduPCSDownloader as BaiduPCSApiDownloader
 from app.exceptions.auth_exceptions import AuthRequiredException
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/baidupcs", tags=["百度网盘"])
+
+# 使用 API 下载器替代命令行工具
+api_downloader = BaiduPCSApiDownloader()
 
 
 # =============== 请求模型 ===============
@@ -105,8 +108,8 @@ async def add_baidupcs_user(user_data: BaiduPCSUserData):
         logger.info("📝 开始添加百度网盘用户")
         
         # 首先检查是否已经有认证用户
-        if baidupcs_service.is_authenticated():
-            user_info = baidupcs_service.get_user_info()
+        if api_downloader.is_authenticated():
+            user_info = api_downloader.get_user_info()
             if user_info.get("success", False):
                 logger.info("✅ 用户已经认证，无需重复添加")
                 return {
@@ -118,10 +121,10 @@ async def add_baidupcs_user(user_data: BaiduPCSUserData):
         # 根据提供的数据类型添加用户
         if user_data.cookies:
             logger.info("🔧 使用 Cookies 添加用户")
-            result = baidupcs_service.add_user_by_cookies(user_data.cookies)
+            result = api_downloader.add_user_by_cookies(user_data.cookies)
         elif user_data.bduss:
             logger.info("🔧 使用 BDUSS 添加用户")
-            result = baidupcs_service.add_user_by_bduss(user_data.bduss, user_data.stoken)
+            result = api_downloader.add_user_by_bduss(user_data.bduss, user_data.stoken)
         else:
             return {
                 "success": False,
@@ -130,7 +133,7 @@ async def add_baidupcs_user(user_data: BaiduPCSUserData):
         
         # 如果添加成功，获取用户信息
         if result.get("success", False):
-            user_info = baidupcs_service.get_user_info()
+            user_info = api_downloader.get_user_info()
             if user_info.get("success", False):
                 result["user_info"] = user_info.get("info", "")
         
@@ -185,11 +188,11 @@ def get_current_user():
         logger.info("🔍 API调用：获取当前用户信息")
         
         # 添加详细的调试信息
-        is_auth = baidupcs_service.is_authenticated()
+        is_auth = api_downloader.is_authenticated()
         logger.info(f"📋 API认证检查结果: {is_auth}")
         
         if is_auth:
-            user_info = baidupcs_service.get_user_info()
+            user_info = api_downloader.get_user_info()
             logger.info(f"📋 API用户信息获取: {user_info.get('success', False)}")
             
             return R.success({
@@ -212,20 +215,22 @@ def get_current_user():
 def get_auth_status():
     """检查认证状态"""
     try:
-        is_authenticated = baidupcs_service.is_authenticated()
+        is_authenticated = api_downloader.is_authenticated()
         
         if is_authenticated:
-            user_info_raw = baidupcs_service.get_user_info()
+            user_info_raw = api_downloader.get_user_info()
             
             if user_info_raw.get("success", False):
-                # 解析原始用户信息
-                raw_info = user_info_raw.get("info", "")
-                parsed_user_info = baidupcs_service._parse_user_info(raw_info)
-                
+                # API 返回的用户信息已经是解析好的
                 return R.success({
                     "authenticated": True,
                     "message": "已认证",
-                    "user_info": parsed_user_info
+                    "user_info": {
+                        "user_id": user_info_raw.get("user_id"),
+                        "user_name": user_info_raw.get("user_name"),
+                        "quota": user_info_raw.get("quota"),
+                        "used": user_info_raw.get("used")
+                    }
                 })
             else:
                 return R.success({
@@ -273,7 +278,7 @@ def get_file_list(
 ):
     """获取文件列表"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPCSDownloader()
@@ -305,7 +310,7 @@ def search_files(
 ):
     """搜索文件"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         # TODO: 实现搜索功能
@@ -328,7 +333,7 @@ def search_files(
 def get_media_files(path: str = Query("/", description="目录路径")):
     """获取媒体文件"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPCSDownloader()
@@ -354,7 +359,7 @@ def get_media_files(path: str = Query("/", description="目录路径")):
 def download_file(request: DownloadRequest):
     """下载文件"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPCSDownloader()
@@ -404,7 +409,7 @@ def download_with_enhanced_features(
 ):
     """增强的下载功能（支持baidu_pan://协议）"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPanDownloader()
@@ -437,7 +442,7 @@ def download_with_enhanced_features(
 def upload_file(request: UploadRequest):
     """上传文件"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPCSDownloader()
@@ -461,7 +466,7 @@ def upload_file(request: UploadRequest):
 def get_video_info(url: str = Query(..., description="视频URL或路径")):
     """获取视频信息"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPCSDownloader()
@@ -485,7 +490,7 @@ def get_video_info(url: str = Query(..., description="视频URL或路径")):
 def create_tasks(request: CreateTaskRequest):
     """创建下载任务"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         # TODO: 实现任务创建功能
@@ -512,7 +517,7 @@ def batch_download_with_enhanced_features(
 ):
     """批量下载"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         downloader = BaiduPanDownloader()
@@ -644,10 +649,10 @@ def get_usage_guide():
 def get_queue_status():
     """获取下载队列状态"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
-        queue_info = baidupcs_service.get_queue_info()
+        queue_info = api_downloader.get_queue_info()
         return R.success(queue_info)
         
     except Exception as e:
@@ -659,10 +664,10 @@ def get_queue_status():
 def get_task_status(task_id: str):
     """获取特定任务状态"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
-        status = baidupcs_service.get_task_status(task_id)
+        status = api_downloader.get_task_status(task_id)
         if not status:
             return R.error("任务不存在", code=404)
         
@@ -677,10 +682,10 @@ def get_task_status(task_id: str):
 def cancel_task(task_id: str):
     """取消下载任务"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
-        success = baidupcs_service.cancel_task(task_id)
+        success = api_downloader.cancel_task(task_id)
         if success:
             return R.success({"message": "任务已取消", "task_id": task_id})
         else:
@@ -695,11 +700,11 @@ def cancel_task(task_id: str):
 def download_file_async(request: DownloadRequest):
     """异步下载文件"""
     try:
-        if not baidupcs_service.is_authenticated():
+        if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
         # 使用异步下载模式
-        result = baidupcs_service.download_file(
+        result = api_downloader.download_file(
             remote_path=request.remote_path,
             local_path=request.local_path,
             wait_for_completion=False

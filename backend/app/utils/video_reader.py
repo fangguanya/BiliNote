@@ -48,9 +48,14 @@ class VideoReader:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """作为上下文管理器的一部分，在退出时释放视频捕获对象。"""
+        self.release()
+    
+    def release(self):
+        """手动释放视频捕获对象（也可以作为上下文管理器使用）。"""
         if self.cap:
             self.cap.release()
             logger.debug(f"视频文件已释放: {self.video_path}")
+            self.cap = None
 
     def get_frame(self, ts: float, scale: float = None) -> np.ndarray | None:
         """

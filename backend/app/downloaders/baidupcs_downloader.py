@@ -15,7 +15,7 @@ from urllib.parse import unquote
 
 from app.downloaders.base import Downloader, DownloadQuality, QUALITY_MAP
 from app.models.notes_model import AudioDownloadResult
-from app.services.baidupcs_service import baidupcs_service
+from app.third_party.baidupcs_api import BaiduPCSDownloader as BaiduPCSApiDownloader
 from app.services.global_download_manager import global_download_manager
 from app.exceptions.auth_exceptions import AuthRequiredException
 from app.utils.logger import get_logger
@@ -28,13 +28,14 @@ logger = get_logger(__name__)
 class BaiduPCSDownloader(Downloader):
     """
     统一的百度网盘下载器
-    基于BaiduPCS-Py命令行工具，支持baidu_pan://协议和多种链接格式
+    直接使用 BaiduPCS Python API，支持baidu_pan://协议和多种链接格式
     通过全局下载管理器确保串行下载
     """
     
     def __init__(self):
         super().__init__()
-        self.pcs_service = baidupcs_service
+        # 使用 API 下载器（直接调用 Python API，不再使用命令行工具）
+        self.api_downloader = BaiduPCSApiDownloader()
         
         # 支持的视频和音频格式
         self.video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
@@ -47,9 +48,9 @@ class BaiduPCSDownloader(Downloader):
     def add_user(self, cookies: str, bduss: str = None) -> bool:
         """添加百度网盘用户"""
         if cookies:
-            result = self.pcs_service.add_user_by_cookies(cookies)
+            result = self.api_downloader.add_user_by_cookies(cookies)
         elif bduss:
-            result = self.pcs_service.add_user_by_bduss(bduss)
+            result = self.api_downloader.add_user_by_bduss(bduss)
         else:
             return False
         
@@ -57,7 +58,7 @@ class BaiduPCSDownloader(Downloader):
     
     def is_authenticated(self) -> bool:
         """检查是否已认证"""
-        return self.pcs_service.is_authenticated()
+        return self.api_downloader.is_authenticated()
     
     # =============== 文件管理 ===============
     
@@ -80,7 +81,7 @@ class BaiduPCSDownloader(Downloader):
         if share_code or extract_code:
             logger.warning("⚠️ 当前版本不支持分享链接，只能获取个人文件列表")
         
-        result = self.pcs_service.get_file_list(path, use_cache=use_cache, recursive=recursive)
+        result = self.api_downloader.list_files(path, recursive=recursive)
         if result.get("success", False):
             return result.get("files", [])
         return []
@@ -90,11 +91,14 @@ class BaiduPCSDownloader(Downloader):
         if not self.is_authenticated():
             return {}
         
-        user_info_result = self.pcs_service.get_user_info()
+        user_info_result = self.api_downloader.get_user_info()
         if user_info_result.get("success", False):
-            raw_info = user_info_result.get("info", "")
-            parsed_info = self.pcs_service._parse_user_info(raw_info)
-            return parsed_info
+            return {
+                "user_id": user_info_result.get("user_id"),
+                "user_name": user_info_result.get("user_name"),
+                "quota": user_info_result.get("quota"),
+                "used": user_info_result.get("used")
+            }
         
         return {}
     
@@ -125,8 +129,17 @@ class BaiduPCSDownloader(Downloader):
                 
                 if filename:
                     filename = urllib.parse.unquote(filename)
+                    # ⚠️ 关键修复：清理文件名中的换行符和多余空格
+                    filename = filename.replace('\n', '').replace('\r', '').replace('\t', '')
+                    logger.debug(f"🔍 解析后的filename: {repr(filename)}")
                 if file_path:
+                    original_path = file_path
                     file_path = urllib.parse.unquote(file_path)
+                    # ⚠️ 关键修复：清理路径中的换行符和多余空格
+                    file_path = file_path.replace('\n', '').replace('\r', '').replace('\t', '')
+                    logger.info(f"🔍 URL解析 - 原始path参数: {repr(original_path)}")
+                    logger.info(f"🔍 URL解析 - unquote后: {repr(urllib.parse.unquote(original_path))}")
+                    logger.info(f"🔍 URL解析 - 清理后的file_path: {repr(file_path)}")
                 
                 return fs_id, filename, file_path
             else:
@@ -215,34 +228,35 @@ class BaiduPCSDownloader(Downloader):
             
             local_path = os.path.join(download_path, local_filename)
             
-            logger.info(f"🔧 调用BaiduPCS服务下载文件")
+            logger.info(f"🔧 调用 BaiduPCS API 下载器")
             logger.info(f"   远程路径: {remote_path}")
-            logger.info(f"   本地路径: {local_path}")
+            logger.info(f"   本地目录: {download_path}")
+            logger.info(f"   本地文件名: {local_filename}")
             
-            # 直接使用BaiduPCS服务下载（不通过队列）
-            result = self.pcs_service.download_file(
-                remote_path=remote_path, 
-                local_path=local_path,
-                downloader="me",  # 使用推荐的me下载器
-                concurrency=5,    # 5个并发连接
-                wait_for_completion=True,  # 同步等待完成
-                timeout=1800      # 30分钟超时
+            # 直接使用 API 下载器
+            result = self.api_downloader.download_file(
+                remote_path=remote_path,
+                local_dir=download_path,
+                local_filename=local_filename,
+                concurrency=5
             )
             
-            logger.info(f"🔍 BaiduPCS服务返回结果:")
+            logger.info(f"🔍 API 下载器返回结果:")
             logger.info(f"   结果类型: {type(result)}")
             logger.info(f"   结果内容: {result}")
             logger.info(f"   success值: {result.get('success', 'N/A')}")
-            logger.info(f"   文件存在检查: {os.path.exists(local_path)}")
             
-            if result.get("success", False) and os.path.exists(local_path):
-                file_size = os.path.getsize(local_path)
+            # API 下载器返回的是 'local_path' 字段
+            actual_local_path = result.get('local_path', local_path)
+            
+            if result.get("success", False) and os.path.exists(actual_local_path):
+                file_size = os.path.getsize(actual_local_path)
                 
-                logger.info(f"✅ {file_type}下载成功: {local_path}")
+                logger.info(f"✅ {file_type}下载成功: {actual_local_path}")
                 logger.info(f"📏 文件大小: {file_size} 字节")
                 
                 download_result = AudioDownloadResult(
-                    file_path=local_path,
+                    file_path=actual_local_path,
                     title=title or Path(local_filename).stem,
                     duration=0,  # BaiduPCS-Py可能不提供时长信息
                     cover_url=None,
@@ -252,9 +266,9 @@ class BaiduPCSDownloader(Downloader):
                         "file_size": file_size,
                         "format": Path(local_filename).suffix[1:] if Path(local_filename).suffix else "unknown",
                         "remote_path": remote_path,
-                        "download_method": "baidupcs"
+                        "download_method": "baidupcs_api"
                     },
-                    video_path=local_path if file_type == "video" else None
+                    video_path=actual_local_path if file_type == "video" else None
                 )
                 
                 logger.info(f"🎉 创建AudioDownloadResult对象:")
@@ -289,13 +303,36 @@ class BaiduPCSDownloader(Downloader):
             if not remote_path:
                 raise ValueError(f"无效的URL格式: {url}")
             
-            # 生成本地文件名
+            # 🔧 关键修复：生成简化的本地文件名，避免Windows 260字符路径限制
+            import hashlib
+            
             if title:
                 clean_title = smart_title_clean(title)
                 ext = Path(remote_path).suffix
                 local_filename = f"{clean_title}{ext}"
             else:
-                local_filename = Path(remote_path).name
+                original_filename = Path(remote_path).name
+                ext = Path(remote_path).suffix
+                base_name = Path(remote_path).stem
+                
+                # 如果文件名太长，简化它
+                # Windows完整路径限制是260字符，我们确保文件名不超过100字符
+                max_filename_length = 100
+                if len(original_filename) > max_filename_length:
+                    # 使用文件名前缀 + 哈希值 + 扩展名
+                    # 前缀取前50个字符，确保可读性
+                    prefix_length = 50
+                    prefix = base_name[:prefix_length] if len(base_name) > prefix_length else base_name
+                    
+                    # 使用完整文件名的MD5哈希值（取前8位）
+                    hash_value = hashlib.md5(original_filename.encode('utf-8')).hexdigest()[:8]
+                    
+                    local_filename = f"{prefix}_{hash_value}{ext}"
+                    logger.info(f"🔧 简化本地文件名:")
+                    logger.info(f"   原始文件名: {original_filename}")
+                    logger.info(f"   简化文件名: {local_filename}")
+                else:
+                    local_filename = original_filename
             
             local_path = os.path.join(download_path, local_filename)
             
@@ -428,7 +465,7 @@ class BaiduPCSDownloader(Downloader):
             parent_path = str(Path(remote_path).parent)
             file_name = Path(remote_path).name
             
-            result = self.pcs_service.get_file_list(parent_path)
+            result = self.api_downloader.list_files(parent_path)
             if not result.get("success", False):
                 return {"error": "获取文件信息失败"}
             
@@ -459,7 +496,7 @@ class BaiduPCSDownloader(Downloader):
         if not self.is_authenticated():
             raise AuthRequiredException("baidu_pan", "需要登录百度网盘")
         
-        result = self.pcs_service.upload_file(local_path, remote_path)
+        result = self.api_downloader.upload_file(local_path, remote_path)
         return result.get("success", False)
     
     # =============== 静态方法（向后兼容） ===============

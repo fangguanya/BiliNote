@@ -20,29 +20,31 @@ logger = logging.getLogger(__name__)
 
 
 class BaiduPCSDownloader:
-    """BaiduPCS API 下载器 - 直接使用 Python API 绕过命令行工具的 bug"""
-    
+    """BaiduPCS API 下载器 - 直接使用 Python API，完全替代命令行工具"""
+
     def __init__(self, api: Optional[BaiduPCSApi] = None):
         """
         初始化下载器
-        
+
         Args:
             api: BaiduPCSApi 实例，如果为 None 则自动创建
         """
+        from baidupcs_py.app.account import AccountManager
+        from baidupcs_py.commands.env import ACCOUNT_DATA_PATH
+        
+        self.account_manager = AccountManager.load_data(ACCOUNT_DATA_PATH)
+        
         if api is None:
             # 从配置文件自动加载
-            from baidupcs_py.app.account import AccountManager
-            from baidupcs_py.commands.env import ACCOUNT_DATA_PATH
-            
-            account_manager = AccountManager.load_data(ACCOUNT_DATA_PATH)
-            account = account_manager.who()
-            
-            if not account:
-                raise ValueError("未找到已登录的百度网盘账号，请先使用 BaiduPCS-Py 登录")
-            
-            # 使用 account.pcsapi() 方法创建 API 实例
-            api = account.pcsapi()
-        
+            account = self.account_manager.who()
+
+            if account:
+                # 使用 account.pcsapi() 方法创建 API 实例
+                api = account.pcsapi()
+            else:
+                # 如果没有账号，api 为 None，某些操作会失败
+                api = None
+
         self.api = api
     
     def file_exists(self, remote_path: str) -> bool:
@@ -88,15 +90,61 @@ class BaiduPCSDownloader:
             文件信息字典，如果文件不存在则返回 None
         """
         try:
+            import re
+            
             parent_dir = os.path.dirname(remote_path)
             filename = os.path.basename(remote_path)
             
+            logger.info(f"🔍 获取文件信息:")
+            logger.info(f"   父目录: {parent_dir}")
+            logger.info(f"   文件名: {filename}")
+            
             # 列出父目录
+            logger.info(f"📋 列出父目录内容...")
             pcs_files = self.api.list(parent_dir)
+            logger.info(f"✅ 找到 {len(pcs_files)} 个文件/目录")
+            
+            # 规范化文件名中的空格
+            # 策略1: 将多个空格替换为单个空格
+            normalized_filename = re.sub(r'\s+', ' ', filename)
+            # 策略2: 移除所有空格（用于更宽松的匹配）
+            no_space_filename = re.sub(r'\s+', '', filename)
             
             # 查找文件
             for pcs_file in pcs_files:
-                if pcs_file.path == remote_path or os.path.basename(pcs_file.path) == filename:
+                actual_filename = os.path.basename(pcs_file.path)
+                normalized_actual = re.sub(r'\s+', ' ', actual_filename)
+                no_space_actual = re.sub(r'\s+', '', actual_filename)
+                
+                # 先尝试精确匹配
+                if pcs_file.path == remote_path or actual_filename == filename:
+                    logger.info(f"✅ 精确匹配成功: {actual_filename}")
+                    return {
+                        'path': pcs_file.path,
+                        'size': pcs_file.size,
+                        'is_dir': pcs_file.is_dir,
+                        'fs_id': pcs_file.fs_id,
+                        'md5': pcs_file.md5,
+                    }
+                
+                # 尝试规范化空格后匹配（多个空格 -> 单个空格）
+                if normalized_actual == normalized_filename:
+                    logger.info(f"🔍 通过规范化空格找到匹配文件 (多空格->单空格):")
+                    logger.info(f"   请求的文件名: {repr(filename)}")
+                    logger.info(f"   实际的文件名: {repr(actual_filename)}")
+                    return {
+                        'path': pcs_file.path,
+                        'size': pcs_file.size,
+                        'is_dir': pcs_file.is_dir,
+                        'fs_id': pcs_file.fs_id,
+                        'md5': pcs_file.md5,
+                    }
+                
+                # 尝试移除所有空格后匹配（更宽松的匹配）
+                if no_space_actual == no_space_filename:
+                    logger.info(f"🔍 通过移除空格找到匹配文件 (忽略所有空格):")
+                    logger.info(f"   请求的文件名: {repr(filename)}")
+                    logger.info(f"   实际的文件名: {repr(actual_filename)}")
                     return {
                         'path': pcs_file.path,
                         'size': pcs_file.size,
@@ -105,9 +153,16 @@ class BaiduPCSDownloader:
                         'md5': pcs_file.md5,
                     }
             
+            logger.warning(f"⚠️ 未找到匹配文件: {filename}")
+            logger.info(f"📁 目录中的前10个文件:")
+            for i, pcs_file in enumerate(pcs_files[:10]):
+                logger.info(f"   [{i+1}] {os.path.basename(pcs_file.path)}")
+            
             return None
         except Exception as e:
-            logger.error(f"获取文件信息失败: {e}")
+            logger.error(f"❌ 获取文件信息失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def download_file(
@@ -206,9 +261,7 @@ class BaiduPCSDownloader:
                 "Connection": "Keep-Alive",
             }
             
-            # 使用 MeDownloader
-            local_path_tmp = local_path + ".tmp"
-            
+            # 使用 MeDownloader - 直接下载到最终文件名，避免重命名导致的文件锁定问题
             downloader = MeDownloader(
                 "GET",
                 download_link,
@@ -216,14 +269,27 @@ class BaiduPCSDownloader:
                 max_workers=concurrency,
             )
             
-            with open(local_path_tmp, "wb") as f:
-                downloader.download(f, chunk_size=chunk_size)
+            # MeDownloader.download() 参数: (localpath, task_id, continue_, done_callback)
+            # 直接下载到最终路径，不使用 .tmp 后缀
+            downloader.download(local_path, task_id=None, continue_=False)
             
-            # 下载完成，重命名
-            if os.path.exists(local_path_tmp):
-                import shutil
-                shutil.move(local_path_tmp, local_path)
-                
+            # 显式清理下载器资源
+            try:
+                downloader.close()
+            except:
+                pass
+            
+            # 删除下载器对象引用
+            del downloader
+            
+            # 等待文件句柄释放
+            import time
+            import gc
+            gc.collect()  # 强制垃圾回收
+            time.sleep(0.5)  # 等待1秒确保文件完全写入
+            
+            # 验证下载结果
+            if os.path.exists(local_path):
                 actual_size = os.path.getsize(local_path)
                 logger.info(f"✅ 下载成功!")
                 logger.info(f"   文件路径: {local_path}")
@@ -257,6 +323,237 @@ class BaiduPCSDownloader:
         finally:
             # 清理 MeDownloader
             MeDownloader._exit_executor()
+    
+    # ==================== 用户管理功能 ====================
+    
+    def is_authenticated(self) -> bool:
+        """检查用户是否已认证"""
+        try:
+            if self.api is None:
+                return False
+            
+            # 尝试获取用户信息来验证认证状态
+            user_info = self.api.user_info()
+            return user_info is not None
+        except Exception as e:
+            logger.error(f"检查认证状态失败: {e}")
+            return False
+    
+    def add_user_by_cookies(self, cookies: str) -> Dict[str, Any]:
+        """
+        通过 cookies 添加用户
+        
+        Args:
+            cookies: 百度网盘 cookies 字符串
+            
+        Returns:
+            操作结果字典
+        """
+        try:
+            from baidupcs_py.commands.env import ACCOUNT_DATA_PATH
+            
+            # 解析 cookies 获取 BDUSS
+            bduss = None
+            for cookie in cookies.split(';'):
+                cookie = cookie.strip()
+                if cookie.startswith('BDUSS='):
+                    bduss = cookie.split('=', 1)[1]
+                    break
+            
+            if not bduss:
+                return {
+                    'success': False,
+                    'message': 'cookies 中未找到 BDUSS'
+                }
+            
+            # 使用 BDUSS 添加用户
+            return self.add_user_by_bduss(bduss)
+            
+        except Exception as e:
+            logger.error(f"通过 cookies 添加用户失败: {e}")
+            return {
+                'success': False,
+                'message': f'添加用户失败: {str(e)}'
+            }
+    
+    def add_user_by_bduss(self, bduss: str, stoken: str = None) -> Dict[str, Any]:
+        """
+        通过 BDUSS 添加用户
+        
+        Args:
+            bduss: 百度网盘 BDUSS
+            stoken: 可选的 STOKEN
+            
+        Returns:
+            操作结果字典
+        """
+        try:
+            from baidupcs_py.app.account import Account
+            from baidupcs_py.commands.env import ACCOUNT_DATA_PATH
+            
+            # 创建账号
+            account = Account.from_bduss(bduss, cookies={'STOKEN': stoken} if stoken else {})
+            
+            # 添加到账号管理器
+            self.account_manager.su(account)
+            self.account_manager.save(ACCOUNT_DATA_PATH)
+            
+            # 更新当前 API 实例
+            self.api = account.pcsapi()
+            
+            logger.info("✅ 用户添加成功")
+            return {
+                'success': True,
+                'message': '用户添加成功'
+            }
+            
+        except Exception as e:
+            logger.error(f"通过 BDUSS 添加用户失败: {e}")
+            return {
+                'success': False,
+                'message': f'添加用户失败: {str(e)}'
+            }
+    
+    def get_user_info(self) -> Dict[str, Any]:
+        """
+        获取当前用户信息
+        
+        Returns:
+            用户信息字典
+        """
+        try:
+            if not self.api:
+                return {
+                    'success': False,
+                    'message': '未登录'
+                }
+            
+            # 获取用户信息
+            user_info = self.api.user_info()
+            
+            if user_info:
+                return {
+                    'success': True,
+                    'user_id': user_info.user_id,
+                    'user_name': user_info.user_name,
+                    'quota': user_info.quota,
+                    'used': user_info.used
+                }
+            else:
+                return {
+                    'success': False,
+                    'message': '获取用户信息失败'
+                }
+                
+        except Exception as e:
+            logger.error(f"获取用户信息失败: {e}")
+            return {
+                'success': False,
+                'message': f'获取用户信息失败: {str(e)}'
+            }
+    
+    # ==================== 文件操作功能 ====================
+    
+    def list_files(self, path: str = "/", recursive: bool = False) -> Dict[str, Any]:
+        """
+        列出文件
+        
+        Args:
+            path: 远程路径
+            recursive: 是否递归列出子目录
+            
+        Returns:
+            文件列表字典
+        """
+        try:
+            if not self.api:
+                return {
+                    'success': False,
+                    'message': '未登录'
+                }
+            
+            # 列出文件
+            pcs_files = self.api.list(path)
+            
+            files = []
+            for pcs_file in pcs_files:
+                file_info = {
+                    'path': pcs_file.path,
+                    'filename': os.path.basename(pcs_file.path),
+                    'is_dir': pcs_file.is_dir,
+                    'size': pcs_file.size,
+                    'fs_id': pcs_file.fs_id,
+                    'md5': pcs_file.md5,
+                    'server_mtime': pcs_file.server_mtime
+                }
+                files.append(file_info)
+                
+                # 如果是目录且需要递归
+                if recursive and pcs_file.is_dir:
+                    sub_result = self.list_files(pcs_file.path, recursive=True)
+                    if sub_result.get('success'):
+                        files.extend(sub_result.get('files', []))
+            
+            return {
+                'success': True,
+                'files': files,
+                'count': len(files)
+            }
+            
+        except Exception as e:
+            logger.error(f"列出文件失败: {e}")
+            return {
+                'success': False,
+                'message': f'列出文件失败: {str(e)}'
+            }
+    
+    def upload_file(self, local_path: str, remote_path: str) -> Dict[str, Any]:
+        """
+        上传文件
+        
+        Args:
+            local_path: 本地文件路径
+            remote_path: 远程文件路径
+            
+        Returns:
+            上传结果字典
+        """
+        try:
+            if not self.api:
+                return {
+                    'success': False,
+                    'message': '未登录'
+                }
+            
+            if not os.path.exists(local_path):
+                return {
+                    'success': False,
+                    'message': f'本地文件不存在: {local_path}'
+                }
+            
+            # 上传文件
+            from baidupcs_py.commands.upload import upload as pcs_upload
+            
+            pcs_upload(
+                self.api,
+                local_path,
+                remote_path,
+                ondup='overwrite'  # 覆盖同名文件
+            )
+            
+            logger.info(f"✅ 文件上传成功: {remote_path}")
+            return {
+                'success': True,
+                'message': '上传成功',
+                'remote_path': remote_path
+            }
+            
+        except Exception as e:
+            logger.error(f"上传文件失败: {e}")
+            return {
+                'success': False,
+                'message': f'上传文件失败: {str(e)}'
+            }
 
 
 def create_downloader() -> BaiduPCSDownloader:
