@@ -262,6 +262,19 @@ class BaiduPCSDownloader:
             }
             
             # 使用 MeDownloader - 直接下载到最终文件名，避免重命名导致的文件锁定问题
+            # 
+            # 重要：MeDownloader 使用类级别的全局线程池，可能被其他下载关闭
+            # 解决方案：每次下载前确保线程池已初始化
+            from concurrent.futures import ThreadPoolExecutor
+            from threading import Semaphore
+            
+            # 检查线程池是否可用，如果不可用则重新初始化
+            if not hasattr(MeDownloader, '_executor') or MeDownloader._executor._shutdown:
+                logger.info("🔄 重新初始化 MeDownloader 线程池")
+                MeDownloader._executor = ThreadPoolExecutor(max_workers=concurrency)
+                MeDownloader._semaphore = Semaphore(concurrency)
+                MeDownloader._futures = []
+            
             downloader = MeDownloader(
                 "GET",
                 download_link,
@@ -272,10 +285,6 @@ class BaiduPCSDownloader:
             # MeDownloader.download() 参数: (localpath, task_id, continue_, done_callback)
             # 直接下载到最终路径，不使用 .tmp 后缀
             downloader.download(local_path, task_id=None, continue_=False)
-            
-            # 注意：不要调用 downloader.close()！
-            # MeDownloader 使用全局线程池，关闭会导致后续下载失败
-            # 线程池会在程序退出时自动清理
             
             # 等待文件完全写入
             import time
