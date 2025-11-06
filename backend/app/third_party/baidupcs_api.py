@@ -273,20 +273,13 @@ class BaiduPCSDownloader:
             # 直接下载到最终路径，不使用 .tmp 后缀
             downloader.download(local_path, task_id=None, continue_=False)
             
-            # 显式清理下载器资源
-            try:
-                downloader.close()
-            except:
-                pass
+            # 注意：不要调用 downloader.close()！
+            # MeDownloader 使用全局线程池，关闭会导致后续下载失败
+            # 线程池会在程序退出时自动清理
             
-            # 删除下载器对象引用
-            del downloader
-            
-            # 等待文件句柄释放
+            # 等待文件完全写入
             import time
-            import gc
-            gc.collect()  # 强制垃圾回收
-            time.sleep(0.5)  # 等待1秒确保文件完全写入
+            time.sleep(0.5)
             
             # 验证下载结果
             if os.path.exists(local_path):
