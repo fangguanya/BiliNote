@@ -287,23 +287,21 @@ class NoteGenerator:
                                         
                                         logger.info(f"🎬 开始提取 {len(timestamps)} 帧...")
                                         
-                                        # 创建共享的VideoReader（避免重复打开视频）
-                                        video_reader = VideoReader(video_path)
-                                        video_reader.__enter__()  # 手动打开视频文件
-                                        
+                                        # 每个线程使用独立的VideoReader，避免多线程冲突
                                         def extract_and_encode_frame(ts, index):
                                             try:
-                                                # 使用共享的VideoReader
-                                                frame = video_reader.get_frame(ts, scale=0.5)
-                                                
-                                                if frame is not None:
-                                                    # 在内存中将帧编码为JPG，使用更高的压缩率
-                                                    success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                                                    if success:
-                                                        encoded_string = base64.b64encode(buffer).decode("utf-8")
-                                                        return (index, f"data:image/jpeg;base64,{encoded_string}")
-                                                    else:
-                                                        logger.warning(f"⚠️ 编码帧失败 at {ts}s")
+                                                # 每个线程创建独立的VideoReader
+                                                with VideoReader(video_path) as reader:
+                                                    frame = reader.get_frame(ts, scale=0.5)
+                                                    
+                                                    if frame is not None:
+                                                        # 在内存中将帧编码为JPG，使用更高的压缩率
+                                                        success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                                                        if success:
+                                                            encoded_string = base64.b64encode(buffer).decode("utf-8")
+                                                            return (index, f"data:image/jpeg;base64,{encoded_string}")
+                                                        else:
+                                                            logger.warning(f"⚠️ 编码帧失败 at {ts}s")
                                             except Exception as e:
                                                 logger.error(f"❌ 提取帧失败 at {ts}s: {e}")
                                             return (index, None)
@@ -312,8 +310,9 @@ class NoteGenerator:
                                         max_size_mb = 50.0  # 提高限制到50MB（约1000-1500帧）
                                         extracted_count = 0
                                         
-                                        # 使用更多线程加速
-                                        max_workers = min(32, os.cpu_count() * 4)
+                                        # 使用适度的线程数，避免过多线程导致 FFmpeg 冲突
+                                        # 每个线程会打开一个独立的视频文件句柄
+                                        max_workers = min(8, os.cpu_count() * 2)
                                         
                                         with ThreadPoolExecutor(max_workers=max_workers) as executor:
                                             future_to_ts = {executor.submit(extract_and_encode_frame, ts, i): (ts, i) for i, ts in enumerate(timestamps)}
@@ -346,9 +345,6 @@ class NoteGenerator:
                                             
                                             # 过滤掉None值，保持顺序
                                             video_img_urls = [img for img in results if img is not None]
-                                        
-                                        # 关闭VideoReader
-                                        video_reader.release()
                                         
                                         logger.info(f"✅ 成功提取 {extracted_count} 帧，总大小: {total_size_mb:.2f}MB")
 
