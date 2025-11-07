@@ -1195,6 +1195,14 @@ class NotionService:
             "dockerfile": "docker",
             "yml": "yaml",
             "md": "markdown",
+            "csharp": "c#",
+            "cs": "c#",
+            "fsharp": "f#",
+            "fs": "f#",
+            "objectivec": "objective-c",
+            "objc": "objective-c",
+            "vb": "visual basic",
+            "vbnet": "vb.net",
         }
         
         # 规范化语言名称
