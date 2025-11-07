@@ -418,93 +418,126 @@ class NotionService:
         上传文件到Notion并返回file_upload_id
         
         Args:
-            file_path: 文件路径（本地路径或URL）
+            file_path: 文件路径（本地路径或URL，或base64数据）
             filename: 文件名（可选）
             
         Returns:
             str: file_upload_id，失败时返回None
         """
         try:
+            # 处理 base64 编码的图片数据
+            if file_path.startswith('data:image/'):
+                logger.info(f"🖼️ 检测到 base64 编码的图片数据")
+                try:
+                    # 解析 data URI: data:image/jpeg;base64,<base64_data>
+                    header, base64_data = file_path.split(',', 1)
+                    # 提取 MIME 类型
+                    mime_type = header.split(':')[1].split(';')[0]  # image/jpeg
+                    file_extension = mime_type.split('/')[1]  # jpeg
+                    
+                    # 解码 base64 数据
+                    import base64
+                    file_content = base64.b64decode(base64_data)
+                    
+                    # 生成文件名
+                    import uuid
+                    if not filename:
+                        filename = f"image_{uuid.uuid4().hex[:8]}.{file_extension}"
+                    
+                    content_type = mime_type
+                    
+                    logger.info(f"✅ Base64 图片解码成功: {len(file_content)} 字节, 类型: {content_type}")
+                    
+                    # 跳转到上传逻辑
+                    final_filename = filename
+                    
+                except Exception as e:
+                    logger.error(f"❌ Base64 图片解码失败: {e}")
+                    return None
+            
             # 首先检查和处理特殊协议
-            if file_path.startswith(('attachment:', 'data:', 'blob:')):
+            elif file_path.startswith(('attachment:', 'blob:')):
                 logger.warning(f"⚠️ 不支持的文件协议: {file_path}")
                 return None
             
-            # 首先获取文件内容和类型信息，用于创建File Upload对象
-            file_content = None
-            content_type = None
-            final_filename = filename
-            
-            if file_path.startswith(('http://', 'https://')):
-                # 网络文件
-                logger.info(f"正在下载网络文件: {file_path}")
-                file_response = requests.get(file_path)
-                if file_response.status_code == 200:
-                    file_content = file_response.content
-                    content_type = file_response.headers.get('content-type', 'application/octet-stream')
-                    if not final_filename:
-                        final_filename = file_path.split('/')[-1]
-                else:
-                    logger.error(f"下载网络文件失败: {file_path}, 状态码: {file_response.status_code}")
-                    return None
             else:
-                # 本地文件处理
-                original_path = file_path
-                
-                # 处理相对路径
-                if file_path.startswith('./'):
-                    file_path = file_path[2:]
-                if file_path.startswith('/static/'):
-                    file_path = file_path[1:]  # 移除开头的 /，变成 static/...
-                
-                # 构建完整路径，尝试多种可能的位置
-                # 增加更多可能的路径组合以解决从JSON重新加载时的路径问题
-                possible_paths = [
-                    # 当前工作目录下的路径
-                    os.path.join(os.getcwd(), 'backend', file_path),     # backend/static/...
-                    os.path.join(os.getcwd(), file_path),                # static/...
-                    
-                    # 如果路径已经包含static，尝试不同的组合
-                    os.path.join(os.getcwd(), 'backend', 'static', file_path.replace('static/', '')),  # backend/static/screenshots/...
-                    os.path.join(os.getcwd(), 'static', file_path.replace('static/', '')),             # static/screenshots/...
-                    
-                    # 如果是screenshots相关路径，尝试直接在static目录下查找
-                    os.path.join(os.getcwd(), 'backend', 'static', 'screenshots', os.path.basename(file_path)),
-                    os.path.join(os.getcwd(), 'static', 'screenshots', os.path.basename(file_path)),
-                    
-                    # 绝对路径
-                    file_path
-                ]
-                
-                full_path = None
-                for i, path in enumerate(possible_paths):
-                    logger.debug(f"尝试路径 {i+1}: {path}")
-                    if os.path.exists(path):
-                        full_path = path
-                        logger.info(f"✅ 找到文件在路径 {i+1}: {path}")
-                        break
+                # 原有的文件处理逻辑
+                file_content = None
+                content_type = None
+                final_filename = filename
+            
+            # 如果不是 base64 数据，继续原有的文件处理逻辑
+            if not file_path.startswith('data:image/'):
+                if file_path.startswith(('http://', 'https://')):
+                    # 网络文件
+                    logger.info(f"正在下载网络文件: {file_path}")
+                    file_response = requests.get(file_path, timeout=30)
+                    if file_response.status_code == 200:
+                        file_content = file_response.content
+                        content_type = file_response.headers.get('content-type', 'application/octet-stream')
+                        if not final_filename:
+                            final_filename = file_path.split('/')[-1]
                     else:
-                        logger.debug(f"❌ 路径不存在: {path}")
-                
-                if not full_path or not os.path.exists(full_path):
-                    logger.error(f"❌ 本地文件不存在: {original_path}")
-                    logger.error(f"📁 当前工作目录: {os.getcwd()}")
-                    logger.error(f"🔍 尝试过的所有路径:")
+                        logger.error(f"下载网络文件失败: {file_path}, 状态码: {file_response.status_code}")
+                        return None
+                else:
+                    # 本地文件处理
+                    original_path = file_path
+                    
+                    # 处理相对路径
+                    if file_path.startswith('./'):
+                        file_path = file_path[2:]
+                    if file_path.startswith('/static/'):
+                        file_path = file_path[1:]  # 移除开头的 /，变成 static/...
+                    
+                    # 构建完整路径，尝试多种可能的位置
+                    # 增加更多可能的路径组合以解决从JSON重新加载时的路径问题
+                    possible_paths = [
+                        # 当前工作目录下的路径
+                        os.path.join(os.getcwd(), 'backend', file_path),     # backend/static/...
+                        os.path.join(os.getcwd(), file_path),                # static/...
+                        
+                        # 如果路径已经包含static，尝试不同的组合
+                        os.path.join(os.getcwd(), 'backend', 'static', file_path.replace('static/', '')),  # backend/static/screenshots/...
+                        os.path.join(os.getcwd(), 'static', file_path.replace('static/', '')),             # static/screenshots/...
+                        
+                        # 如果是screenshots相关路径，尝试直接在static目录下查找
+                        os.path.join(os.getcwd(), 'backend', 'static', 'screenshots', os.path.basename(file_path)),
+                        os.path.join(os.getcwd(), 'static', 'screenshots', os.path.basename(file_path)),
+                        
+                        # 绝对路径
+                        file_path
+                    ]
+                    
+                    full_path = None
                     for i, path in enumerate(possible_paths):
-                        exists = "✅ 存在" if os.path.exists(path) else "❌ 不存在"
-                        logger.error(f"  {i+1}. {path} - {exists}")
-                    return None
-                
-                logger.info(f"找到本地文件: {full_path}")
-                try:
-                    with open(full_path, 'rb') as f:
-                        file_content = f.read()
-                    content_type = mimetypes.guess_type(full_path)[0] or 'application/octet-stream'
-                    if not final_filename:
-                        final_filename = os.path.basename(full_path)
-                except Exception as e:
-                    logger.error(f"读取本地文件失败: {e}")
-                    return None
+                        logger.debug(f"尝试路径 {i+1}: {path}")
+                        if os.path.exists(path):
+                            full_path = path
+                            logger.info(f"✅ 找到文件在路径 {i+1}: {path}")
+                            break
+                        else:
+                            logger.debug(f"❌ 路径不存在: {path}")
+                    
+                    if not full_path or not os.path.exists(full_path):
+                        logger.error(f"❌ 本地文件不存在: {original_path}")
+                        logger.error(f"📁 当前工作目录: {os.getcwd()}")
+                        logger.error(f"🔍 尝试过的所有路径:")
+                        for i, path in enumerate(possible_paths):
+                            exists = "✅ 存在" if os.path.exists(path) else "❌ 不存在"
+                            logger.error(f"  {i+1}. {path} - {exists}")
+                        return None
+                    
+                    logger.info(f"找到本地文件: {full_path}")
+                    try:
+                        with open(full_path, 'rb') as f:
+                            file_content = f.read()
+                        content_type = mimetypes.guess_type(full_path)[0] or 'application/octet-stream'
+                        if not final_filename:
+                            final_filename = os.path.basename(full_path)
+                    except Exception as e:
+                        logger.error(f"读取本地文件失败: {e}")
+                        return None
             
             if not file_content:
                 logger.error("无法获取文件内容")
@@ -525,7 +558,8 @@ class NotionService:
                     "Content-Type": "application/json",
                     "Notion-Version": "2022-06-28"
                 },
-                json=payload
+                json=payload,
+                timeout=30  # 设置30秒超时
             )
             
             if file_upload_response.status_code != 200:
@@ -552,7 +586,8 @@ class NotionService:
                     "Notion-Version": "2022-06-28"
                     # 注意：不要设置Content-Type，让requests自动处理multipart/form-data
                 },
-                files=files
+                files=files,
+                timeout=60  # 设置60秒超时
             )
             
             logger.info(f"文件上传响应状态码: {upload_response.status_code}")
@@ -1187,30 +1222,68 @@ class NotionService:
             Dict: Notion代码块对象
         """
         language_aliases = {
+            # 常见语言别名
             "cpp": "c++",
             "js": "javascript",
             "ts": "typescript",
             "py": "python",
             "shell": "bash",
+            "sh": "bash",
             "dockerfile": "docker",
             "yml": "yaml",
             "md": "markdown",
+            
+            # C# 和 F# 系列
             "csharp": "c#",
             "cs": "c#",
             "fsharp": "f#",
             "fs": "f#",
+            
+            # Objective-C
             "objectivec": "objective-c",
             "objc": "objective-c",
+            "objective c": "objective-c",
+            
+            # Visual Basic 系列
             "vb": "visual basic",
             "vbnet": "vb.net",
+            "visualbasic": "visual basic",
+            
+            # 纯文本
+            "plaintext": "plain text",
+            "text": "plain text",
+            "txt": "plain text",
+            
+            # 其他常见别名
+            "asciiart": "ascii art",
+            "llvm": "llvm ir",
+            "webasm": "webassembly",
+            "wasm": "webassembly",
         }
         
         # 规范化语言名称
-        normalized_language = language_aliases.get(language.lower().strip(), language.lower().strip())
+        input_lang = language.lower().strip()
+        normalized_language = language_aliases.get(input_lang, input_lang)
         
-        # Notion API接受的语言列表（根据错误日志和常规情况）
-        # 这里可以做得更详尽，但别名映射已能解决主要问题
-        # 如果语言仍然无效，Notion会报错，但常见情况已被覆盖
+        # Notion API接受的语言列表
+        notion_supported_languages = {
+            "abap", "abc", "agda", "arduino", "ascii art", "assembly", "bash", "basic", "bnf", 
+            "c", "c#", "c++", "clojure", "coffeescript", "coq", "css", "dart", "dhall", "diff", 
+            "docker", "ebnf", "elixir", "elm", "erlang", "f#", "flow", "fortran", "gherkin", 
+            "glsl", "go", "graphql", "groovy", "haskell", "hcl", "html", "idris", "java", 
+            "javascript", "json", "julia", "kotlin", "latex", "less", "lisp", "livescript", 
+            "llvm ir", "lua", "makefile", "markdown", "markup", "matlab", "mathematica", 
+            "mermaid", "nix", "notion formula", "objective-c", "ocaml", "pascal", "perl", 
+            "php", "plain text", "powershell", "prolog", "protobuf", "purescript", "python", 
+            "r", "racket", "reason", "ruby", "rust", "sass", "scala", "scheme", "scss", 
+            "shell", "smalltalk", "solidity", "sql", "swift", "toml", "typescript", "vb.net", 
+            "verilog", "vhdl", "visual basic", "webassembly", "xml", "yaml", "java/c/c++/c#"
+        }
+        
+        # 如果规范化后的语言不在 Notion 支持列表中，默认使用 javascript
+        if normalized_language not in notion_supported_languages:
+            logger.warning(f"⚠️ 语言 '{language}' (规范化为 '{normalized_language}') 不在 Notion 支持列表中，使用默认语言 'javascript'")
+            normalized_language = "javascript"
         
         return {
             "type": "code",
