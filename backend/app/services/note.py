@@ -266,11 +266,10 @@ class NoteGenerator:
                                             end_time = duration # 如果视频很短
 
                                         # 根据视频时长动态计算帧数
-                                        # 策略：每5秒提取1帧，全覆盖！
                                         duration_minutes = duration / 60
                                         
-                                        # 每5秒1帧
-                                        frame_interval = 15  # 秒
+                                        # 策略：每5秒提取1帧，全覆盖！
+                                        frame_interval = 20  # 秒
                                         num_frames = int(duration / frame_interval)
                                         
                                         # 设置合理的上下限
