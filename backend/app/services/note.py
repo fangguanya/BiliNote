@@ -270,7 +270,7 @@ class NoteGenerator:
                                         duration_minutes = duration / 60
                                         
                                         # 每5秒1帧
-                                        frame_interval = 5  # 秒
+                                        frame_interval = 15  # 秒
                                         num_frames = int(duration / frame_interval)
                                         
                                         # 设置合理的上下限
