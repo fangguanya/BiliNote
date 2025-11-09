@@ -90,6 +90,52 @@ def estimate_mixed_content_tokens(text: str, image_urls: list = None) -> int:
     return total_tokens
 
 
+def _split_images_only(
+    image_urls: List[str],
+    image_tokens_list: List[int],
+    max_tokens: int
+) -> List[Tuple[List[TranscriptSegment], List[str]]]:
+    """
+    仅分割图片（没有转录片段的情况）
+    
+    Args:
+        image_urls: 图片URL列表
+        image_tokens_list: 每张图片的token数列表
+        max_tokens: 每个分块的最大token数
+    
+    Returns:
+        分块列表，每个分块为 (空转录列表, 图片URL列表)
+    """
+    chunks = []
+    current_images = []
+    current_tokens = 0
+    
+    logger.info(f"📸 开始纯图片分块: {len(image_urls)}张图片")
+    
+    for i, (img_url, img_tokens) in enumerate(zip(image_urls, image_tokens_list)):
+        # 检查是否需要开始新分块
+        if current_tokens + img_tokens > max_tokens and current_images:
+            # 保存当前分块
+            chunks.append(([], current_images))
+            logger.info(f"📦 完成图片分块 {len(chunks)}: 0个片段, {len(current_images)}张图片, {current_tokens} tokens")
+            
+            # 开始新分块
+            current_images = [img_url]
+            current_tokens = img_tokens
+        else:
+            # 添加到当前分块
+            current_images.append(img_url)
+            current_tokens += img_tokens
+    
+    # 添加最后一个分块
+    if current_images:
+        chunks.append(([], current_images))
+        logger.info(f"📦 完成最后图片分块 {len(chunks)}: 0个片段, {len(current_images)}张图片, {current_tokens} tokens")
+    
+    logger.info(f"✅ 纯图片分块完成，共 {len(chunks)} 个分块")
+    return chunks
+
+
 def split_segments_with_images_by_tokens(
     segments: List[TranscriptSegment], 
     image_urls: List[str] = None,
@@ -99,15 +145,16 @@ def split_segments_with_images_by_tokens(
     根据token限制将转录片段和图片分割成多个组，图片可以分散到不同分块
     
     Args:
-        segments: 转录片段列表
+        segments: 转录片段列表（可以为空，例如只有视频截图没有音频的情况）
         image_urls: 图片URL列表
         max_tokens: 每组的最大token数
     
     Returns:
         分割后的(片段组, 图片组)元组列表
     """
-    if not segments:
-        return []
+    # 初始化
+    segments = segments or []  # 确保 segments 不是 None
+    image_urls = image_urls or []  # 确保 image_urls 不是 None
     
     chunks = []
     current_chunk = []
@@ -118,7 +165,6 @@ def split_segments_with_images_by_tokens(
     actual_max_tokens = max_tokens
     
     # 计算图片token信息
-    image_urls = image_urls or []
     image_tokens_list = []  # 每张图片的token数
     total_image_tokens = 0
     
@@ -128,10 +174,21 @@ def split_segments_with_images_by_tokens(
         total_image_tokens += tokens
     
     logger.info(f"📊 开始混合内容分割: 转录片段={len(segments)}, 图片={len(image_urls)}, 图片总tokens={total_image_tokens}")
-    logger.info(f"📊 最大token数: {actual_max_tokens} ")
+    logger.info(f"📊 最大token数: {actual_max_tokens}")
     
-    # 如果没有图片，使用原有的分块逻辑
-    if not image_urls:
+    # 特殊情况1: 既没有转录也没有图片
+    if not segments and not image_urls:
+        logger.warning("⚠️ 没有转录片段也没有图片，返回空结果")
+        return []
+    
+    # 特殊情况2: 只有图片，没有转录（例如视频没有音频）
+    if not segments and image_urls:
+        logger.info("📸 只有图片没有转录，创建纯图片分块")
+        return _split_images_only(image_urls, image_tokens_list, actual_max_tokens)
+    
+    # 特殊情况3: 只有转录，没有图片
+    if segments and not image_urls:
+        logger.info("📝 只有转录没有图片，使用纯文本分块")
         segment_chunks = split_segments_by_tokens(segments, max_tokens)
         return [(chunk, []) for chunk in segment_chunks]
     

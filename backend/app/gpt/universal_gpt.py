@@ -25,6 +25,9 @@ class UniversalGPT(GPT):
         return str(timedelta(seconds=int(seconds)))[2:]
 
     def _build_segment_text(self, segments: List[TranscriptSegment]) -> str:
+        """构建转录文本，如果没有转录则返回空字符串"""
+        if not segments:
+            return ""
         return "\n".join(
             f"{self._format_time(seg.start)} - {seg.text.strip()}"
             for seg in segments

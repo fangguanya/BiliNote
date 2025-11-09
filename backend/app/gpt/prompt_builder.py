@@ -1,4 +1,4 @@
-from app.gpt.prompt import BASE_PROMPT
+from app.gpt.prompt import BASE_PROMPT, BASE_PROMPT_NO_TRANSCRIPT
 
 note_formats = [
     {'label': '目录', 'value': 'toc'},
@@ -22,12 +22,22 @@ note_styles = [
 
 # 生成 BASE_PROMPT 函数
 def generate_base_prompt(title, segment_text, tags, _format=None, style=None, extras=None):
-    # 生成 Base Prompt 开头部分
-    prompt = BASE_PROMPT.format(
-        video_title=title,
-        segment_text=segment_text,
-        tags=tags
-    )
+    # 检查是否有转录文本
+    has_transcript = bool(segment_text and segment_text.strip())
+    
+    # 如果没有转录，使用特殊的 prompt
+    if not has_transcript:
+        prompt = BASE_PROMPT_NO_TRANSCRIPT.format(
+            video_title=title,
+            tags=tags
+        )
+    else:
+        # 生成 Base Prompt 开头部分
+        prompt = BASE_PROMPT.format(
+            video_title=title,
+            segment_text=segment_text,
+            tags=tags
+        )
 
     # 添加用户选择的格式
     _format = ['summary','screenshot', 'toc']
