@@ -22,12 +22,14 @@ class SaveToNotionRequest(BaseModel):
     task_id: str
     token: str
     database_id: Optional[str] = None
+    data_source_id: Optional[str] = None  # 新增：数据源ID（Notion API 2025-09-03）
     parent_page_id: Optional[str] = None
 
 class BatchSyncToNotionRequest(BaseModel):
     """批量同步到Notion请求模型"""
     token: str
     database_id: Optional[str] = None
+    data_source_id: Optional[str] = None  # 新增：数据源ID（Notion API 2025-09-03）
     parent_page_id: Optional[str] = None
     task_ids: Optional[List[str]] = None  # 如果指定，则只同步这些任务；否则同步所有未同步的
 
@@ -127,8 +129,12 @@ def save_note_to_notion(request: SaveToNotionRequest):
         
         # 根据是否提供database_id来决定创建方式
         if request.database_id:
-            # 在数据库中创建页面
-            result = notion_service.create_page_in_database(request.database_id, note_result)
+            # 在数据库中创建页面（支持data_source_id参数）
+            result = notion_service.create_page_in_database(
+                request.database_id, 
+                note_result, 
+                data_source_id=request.data_source_id
+            )
         else:
             # 创建独立页面
             result = notion_service.create_standalone_page(note_result, request.parent_page_id)
@@ -244,8 +250,12 @@ def batch_sync_to_notion(request: BatchSyncToNotionRequest):
                 
                 # 同步到Notion
                 if request.database_id:
-                    # 在数据库中创建页面
-                    result = notion_service.create_page_in_database(request.database_id, note_result)
+                    # 在数据库中创建页面（支持data_source_id参数）
+                    result = notion_service.create_page_in_database(
+                        request.database_id, 
+                        note_result,
+                        data_source_id=request.data_source_id
+                    )
                 else:
                     # 创建独立页面
                     result = notion_service.create_standalone_page(note_result, request.parent_page_id)

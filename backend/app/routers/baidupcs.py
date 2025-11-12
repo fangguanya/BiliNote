@@ -98,14 +98,45 @@ class BaiduPCSUserData(BaseModel):
 
 # =============== 用户管理接口 ===============
 
-@router.post("/user/add", summary="添加百度网盘用户")
+@router.get("/debug/routes", summary="调试：显示所有路由")
+def debug_routes():
+    """调试接口：显示当前路由配置"""
+    return {
+        "message": "百度网盘路由正常",
+        "router_prefix": "/baidupcs",
+        "app_prefix": "/api",
+        "available_endpoints": [
+            "POST /api/baidupcs/add_user",
+            "POST /api/baidupcs/remove_user",
+            "GET /api/baidupcs/users",
+            "GET /api/baidupcs/auth_status",
+            "GET /api/baidupcs/current_user",
+            "GET /api/baidupcs/file_list",
+        ],
+        "note": "完整路径 = /api + /baidupcs + 端点路径"
+    }
+
+@router.post("/add_user", summary="添加百度网盘用户")
 async def add_baidupcs_user(user_data: BaiduPCSUserData):
     """
     添加百度网盘用户
     支持通过 Cookies 或 BDUSS 添加用户
     """
+    # 🔥🔥🔥 最前面的日志，确保函数被调用
+    import sys
+    print("\n" + "🔥" * 40, file=sys.stderr)
+    print("🔥🔥🔥 百度网盘添加用户接口被调用！！！", file=sys.stderr)
+    print(f"🔥🔥🔥 接收到的数据: cookies={'有' if user_data.cookies else '无'}, bduss={'有' if user_data.bduss else '无'}", file=sys.stderr)
+    print("🔥" * 40 + "\n", file=sys.stderr)
+    
     try:
-        logger.info("📝 开始添加百度网盘用户")
+        logger.error("=" * 80)
+        logger.error("🔥🔥🔥 [百度网盘] 开始添加用户")
+        if user_data.cookies:
+            logger.error(f"🔥 接收到完整Cookie字符串，长度: {len(user_data.cookies)}")
+        else:
+            logger.error(f"🔥 接收到单独的BDUSS/STOKEN - bduss: {'有' if user_data.bduss else '无'}, stoken: {'有' if user_data.stoken else '无'}")
+        logger.error("=" * 80)
         
         # 首先检查是否已经有认证用户
         if api_downloader.is_authenticated():
@@ -130,6 +161,20 @@ async def add_baidupcs_user(user_data: BaiduPCSUserData):
                 "success": False,
                 "message": "请提供 cookies 或 bduss"
             }
+        
+        # 如果添加失败，增强错误提示
+        if not result.get("success", False):
+            error_msg = result.get("message", "未知错误")
+            
+            # 检查是否是BDUSS过期的错误（31045）
+            if "31045" in str(error_msg) or "用户不存在" in str(error_msg) or "用户未登录" in str(error_msg):
+                logger.error("❌ BDUSS已过期或无效")
+                return {
+                    "success": False,
+                    "message": "BDUSS已过期或无效，请重新获取最新的BDUSS",
+                    "error_code": "31045",
+                    "help": "如何获取有效BDUSS：\n1. 打开浏览器无痕模式\n2. 访问 https://pan.baidu.com\n3. 登录账号\n4. F12 → Application → Cookies → 复制BDUSS的值"
+                }
         
         # 如果添加成功，获取用户信息
         if result.get("success", False):

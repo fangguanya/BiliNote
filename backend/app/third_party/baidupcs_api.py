@@ -354,22 +354,51 @@ class BaiduPCSDownloader:
         try:
             from baidupcs_py.commands.env import ACCOUNT_DATA_PATH
             
-            # 解析 cookies 获取 BDUSS
+            # 清理cookies字符串：移除多余的换行符和空格
+            cookies = cookies.strip().replace('\n', ' ').replace('\r', ' ')
+            
+            logger.info(f"📋 原始cookies长度: {len(cookies)}")
+            logger.info(f"📋 Cookies前200字符: {cookies[:200]}")
+            logger.info(f"📋 Cookies后200字符: {cookies[-200:]}")
+            
+            # 解析 cookies 获取 BDUSS 和 STOKEN
             bduss = None
+            stoken = None
+            
+            # 调试：显示所有cookie键
+            cookie_keys = []
+            for cookie in cookies.split(';'):
+                cookie = cookie.strip()
+                if '=' in cookie:
+                    key = cookie.split('=')[0]
+                    cookie_keys.append(key)
+            
+            logger.info(f"📋 发现的Cookie键: {', '.join(cookie_keys)}")
+            
             for cookie in cookies.split(';'):
                 cookie = cookie.strip()
                 if cookie.startswith('BDUSS='):
-                    bduss = cookie.split('=', 1)[1]
-                    break
+                    bduss = cookie.split('=', 1)[1].strip()
+                    logger.info(f"✅ 找到BDUSS，长度: {len(bduss)}")
+                elif cookie.startswith('BDUSS_BFESS='):
+                    # 注意：BDUSS_BFESS 不是 BDUSS，跳过
+                    logger.info(f"⚠️  发现BDUSS_BFESS（这不是BDUSS）")
+                elif cookie.startswith('STOKEN='):
+                    stoken = cookie.split('=', 1)[1].strip()
+                    logger.info(f"✅ 找到STOKEN，长度: {len(stoken)}")
             
             if not bduss:
+                logger.error("❌ cookies中未找到BDUSS")
+                logger.error(f"Cookies内容: {cookies[:200]}")
                 return {
                     'success': False,
-                    'message': 'cookies 中未找到 BDUSS'
+                    'message': 'cookies 中未找到 BDUSS。请确保cookies字符串格式正确，应包含 BDUSS=xxx 字段'
                 }
             
+            logger.info(f"✅ 从cookies中成功解析 - BDUSS长度: {len(bduss)}, STOKEN: {'有' if stoken else '无'}")
+            
             # 使用 BDUSS 添加用户
-            return self.add_user_by_bduss(bduss)
+            return self.add_user_by_bduss(bduss, stoken)
             
         except Exception as e:
             logger.error(f"通过 cookies 添加用户失败: {e}")
@@ -393,24 +422,56 @@ class BaiduPCSDownloader:
             from baidupcs_py.app.account import Account
             from baidupcs_py.commands.env import ACCOUNT_DATA_PATH
             
+            # 清理BDUSS：移除换行符、空格等特殊字符
+            original_bduss = bduss
+            bduss = bduss.strip().replace('\n', '').replace('\r', '').replace(' ', '').replace('\t', '')
+            
+            if not bduss:
+                logger.error("BDUSS清理后为空")
+                return {
+                    'success': False,
+                    'message': 'BDUSS不能为空'
+                }
+            
+            if len(original_bduss) != len(bduss):
+                logger.info(f"清理了BDUSS中的特殊字符，原长度: {len(original_bduss)}, 清理后: {len(bduss)}")
+            
+            # 创建cookies字典
+            cookies = {}
+            if stoken:
+                stoken = stoken.strip().replace('\n', '').replace('\r', '').replace(' ', '').replace('\t', '')
+                cookies['STOKEN'] = stoken
+            
             # 创建账号
-            account = Account.from_bduss(bduss, cookies={'STOKEN': stoken} if stoken else {})
+            logger.info(f"🔧 开始创建账号，BDUSS长度: {len(bduss)}, STOKEN: {'有' if stoken else '无'}")
+            logger.info(f"🔧 BDUSS前30字符: {bduss[:30]}")
+            logger.info(f"🔧 BDUSS后30字符: {bduss[-30:]}")
+            logger.info(f"🔧 传递给BaiduPCS-Py的cookies: {cookies}")
+            
+            account = Account.from_bduss(bduss, cookies=cookies)
+            logger.info(f"✅ 账号创建成功，用户ID: {account.user.user_id}, 用户名: {account.user.user_name}")
             
             # 添加到账号管理器
-            self.account_manager.su(account)
+            # 注意：先add_account，再su切换到该用户
+            self.account_manager.add_account(account)
+            self.account_manager.su(account.user.user_id)
             self.account_manager.save(ACCOUNT_DATA_PATH)
             
             # 更新当前 API 实例
             self.api = account.pcsapi()
             
-            logger.info("✅ 用户添加成功")
+            logger.info("✅ 用户添加成功并已保存")
             return {
                 'success': True,
-                'message': '用户添加成功'
+                'message': '用户添加成功',
+                'user_id': account.user.user_id,
+                'user_name': account.user.user_name
             }
             
         except Exception as e:
             logger.error(f"通过 BDUSS 添加用户失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return {
                 'success': False,
                 'message': f'添加用户失败: {str(e)}'
@@ -438,8 +499,8 @@ class BaiduPCSDownloader:
                     'success': True,
                     'user_id': user_info.user_id,
                     'user_name': user_info.user_name,
-                    'quota': user_info.quota,
-                    'used': user_info.used
+                    'quota': getattr(user_info, 'quota', 0),
+                    'used': getattr(user_info, 'used', 0)
                 }
             else:
                 return {

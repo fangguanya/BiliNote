@@ -23,8 +23,9 @@ class NotionService:
         """
         try:
             self.token = token  # 保存token用于直接API调用
-            self.client = Client(auth=token)
-            logger.info("Notion客户端初始化成功")
+            # 使用最新的Notion API版本 2025-09-03（支持多数据源）
+            self.client = Client(auth=token, notion_version="2025-09-03")
+            logger.info("Notion客户端初始化成功 (API版本: 2025-09-03)")
         except Exception as e:
             logger.error(f"Notion客户端初始化失败: {e}")
             raise ValueError(f"Notion客户端初始化失败: {e}")
@@ -47,30 +48,135 @@ class NotionService:
     
     def list_databases(self) -> List[Dict[str, Any]]:
         """
-        获取可用的数据库列表
+        获取可用的数据库列表（Notion API 2025-09-03）
+        
+        策略：
+        1. 搜索所有页面和数据库
+        2. 对于每个页面，检查是否有子数据库
+        3. 返回所有找到的数据库
         
         Returns:
-            List[Dict]: 数据库列表
+            List[Dict]: 数据库列表，包含数据源信息
         """
         try:
-            response = self.client.search(
-                filter={"property": "object", "value": "database"}
-            )
+            # 搜索所有内容（不加过滤器）
+            response = self.client.search()
             
             databases = []
-            for db in response.get("results", []):
-                databases.append({
-                    "id": db["id"],
-                    "title": self._extract_title(db.get("title", [])),
-                    "url": db.get("url", ""),
-                    "created_time": db.get("created_time", ""),
-                    "last_edited_time": db.get("last_edited_time", "")
-                })
+            pages_to_check = []
             
-            logger.info(f"成功获取 {len(databases)} 个数据库")
+            for item in response.get("results", []):
+                obj_type = item.get("object")
+                item_id = item.get("id")
+                
+                # 如果是数据库，直接添加
+                if obj_type == "database":
+                    title = self._extract_title(item.get("title", []))
+                    
+                    # 获取该数据库的数据源
+                    data_sources = self._get_database_data_sources(item_id)
+                    data_source_id = data_sources[0]["id"] if data_sources else None
+                    
+                    databases.append({
+                        "id": item_id,
+                        "data_source_id": data_source_id,
+                        "data_source_name": data_sources[0].get("name", "") if data_sources else "",
+                        "title": title if title else "未命名数据库",
+                        "url": item.get("url", ""),
+                        "created_time": item.get("created_time", ""),
+                        "last_edited_time": item.get("last_edited_time", "")
+                    })
+                    
+                # 如果是页面，记录下来稍后检查子元素
+                elif obj_type == "page":
+                    title = self._extract_title(item.get("properties", {}).get("title", {}).get("title", []))
+                    pages_to_check.append({
+                        "id": item_id,
+                        "title": title,
+                        "url": item.get("url", "")
+                    })
+            
+            # 检查每个页面的子元素，看是否有子数据库
+            for page in pages_to_check:
+                try:
+                    child_databases = self._get_child_databases(page["id"])
+                    
+                    if child_databases:
+                        databases.extend(child_databases)
+                        
+                except Exception as e:
+                    logger.warning(f"检查页面 {page['title']} 的子元素失败: {e}")
+                    continue
+            
+            # 输出简洁的结果
+            logger.info(f"✅ 成功获取 {len(databases)} 个数据库：{', '.join([db['title'] for db in databases])}")
             return databases
+            
         except Exception as e:
             logger.error(f"获取数据库列表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    def _get_child_databases(self, page_id: str) -> List[Dict[str, Any]]:
+        """
+        获取页面的子数据库
+        
+        Args:
+            page_id: 页面ID
+            
+        Returns:
+            子数据库列表
+        """
+        try:
+            # 获取页面的所有子块
+            response = self.client.blocks.children.list(block_id=page_id)
+            
+            child_databases = []
+            
+            for block in response.get("results", []):
+                # 查找 child_database 类型的块
+                if block.get("type") == "child_database":
+                    database_id = block.get("id")
+                    title = block.get("child_database", {}).get("title", "")
+                    
+                    # 获取该数据库的数据源
+                    data_sources = self._get_database_data_sources(database_id)
+                    data_source_id = data_sources[0]["id"] if data_sources else None
+                    
+                    child_databases.append({
+                        "id": database_id,
+                        "data_source_id": data_source_id,
+                        "data_source_name": data_sources[0].get("name", "") if data_sources else "",
+                        "title": title if title else "未命名数据库",
+                        "url": f"https://www.notion.so/{database_id.replace('-', '')}",
+                        "parent_page_id": page_id,
+                        "created_time": block.get("created_time", ""),
+                        "last_edited_time": block.get("last_edited_time", "")
+                    })
+            
+            return child_databases
+            
+        except Exception as e:
+            logger.error(f"获取页面子数据库失败: {e}")
+            return []
+    
+    def _get_database_data_sources(self, database_id: str) -> List[Dict[str, Any]]:
+        """
+        获取数据库的数据源列表（Notion API 2025-09-03）
+        
+        Args:
+            database_id: 数据库ID
+            
+        Returns:
+            List[Dict]: 数据源列表，每个包含 id 和 name
+        """
+        try:
+            response = self.client.databases.retrieve(database_id)
+            data_sources = response.get("data_sources", [])
+            return data_sources
+        except Exception as e:
+            logger.error(f"获取数据库数据源失败: {e}")
             return []
     
     def _get_database_properties(self, database_id: str) -> Dict[str, Any]:
@@ -90,18 +196,31 @@ class NotionService:
             logger.error(f"获取数据库属性失败: {e}")
             return {}
 
-    def create_page_in_database(self, database_id: str, note_result: NoteResult) -> Dict[str, Any]:
+    def create_page_in_database(self, database_id: str, note_result: NoteResult, data_source_id: str = None) -> Dict[str, Any]:
         """
-        在指定数据库中创建页面
+        在指定数据库中创建页面（Notion API 2025-09-03）
         
         Args:
             database_id: 数据库ID
             note_result: 笔记结果数据
+            data_source_id: 数据源ID（可选，如果不提供则使用第一个数据源）
             
         Returns:
             Dict: 创建结果
         """
         try:
+            # 步骤1: 获取数据库的数据源
+            if not data_source_id:
+                data_sources = self._get_database_data_sources(database_id)
+                if not data_sources:
+                    return {
+                        "success": False,
+                        "error": "数据库没有可用的数据源"
+                    }
+                # 使用第一个数据源
+                data_source_id = data_sources[0]["id"]
+                logger.info(f"使用数据源: {data_source_id} ({data_sources[0].get('name', '未命名')})")
+            
             # 获取数据库属性结构
             db_properties = self._get_database_properties(database_id)
             
@@ -197,9 +316,12 @@ class NotionService:
                     }
                 }]
             
-            # 分批创建页面和内容
+            # 分批创建页面和内容（使用data_source_id，符合Notion API 2025-09-03）
             response = self._create_page_with_batched_children(
-                parent={"database_id": database_id},
+                parent={
+                    "type": "data_source_id",
+                    "data_source_id": data_source_id
+                },
                 properties=properties,
                 children=children
             )
@@ -556,7 +678,7 @@ class NotionService:
                 headers={
                     "Authorization": f"Bearer {self.token}",
                     "Content-Type": "application/json",
-                    "Notion-Version": "2022-06-28"
+                    "Notion-Version": "2025-09-03"
                 },
                 json=payload,
                 timeout=30  # 设置30秒超时
@@ -583,7 +705,7 @@ class NotionService:
                 upload_url,
                 headers={
                     "Authorization": f"Bearer {self.token}",
-                    "Notion-Version": "2022-06-28"
+                    "Notion-Version": "2025-09-03"
                     # 注意：不要设置Content-Type，让requests自动处理multipart/form-data
                 },
                 files=files,
