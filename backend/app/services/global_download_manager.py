@@ -65,25 +65,29 @@ class GlobalDownloadManager:
         self._download_queue = queue.Queue()
         self._active_tasks: Dict[str, GlobalDownloadTask] = {}
         self._task_results: Dict[str, Any] = {}
-        self._current_task: Optional[GlobalDownloadTask] = None
-        self._worker_thread = None
+        self._current_tasks: list = []  # 改为列表，支持多个并发任务
+        self._worker_threads = []  # 改为列表，支持多个工作线程
         self._queue_lock = threading.Lock()
         self._is_running = False
+        self._max_concurrent_downloads = 3  # 最大并发下载数
         
         # 启动工作线程
-        self._start_worker()
-        logger.info("🌍 全局下载管理器已初始化")
+        self._start_workers()
+        logger.info(f"🌍 全局下载管理器已初始化（最大并发数: {self._max_concurrent_downloads}）")
     
-    def _start_worker(self):
-        """启动工作线程"""
-        if self._worker_thread is None or not self._worker_thread.is_alive():
-            self._is_running = True
-            self._worker_thread = threading.Thread(target=self._worker, daemon=True)
-            self._worker_thread.start()
-            logger.info("🚀 全局下载工作线程已启动")
+    def _start_workers(self):
+        """启动多个工作线程"""
+        self._is_running = True
+        for i in range(self._max_concurrent_downloads):
+            worker_thread = threading.Thread(target=self._worker, args=(i,), daemon=True)
+            worker_thread.start()
+            self._worker_threads.append(worker_thread)
+        logger.info(f"🚀 全局下载管理器已启动 {self._max_concurrent_downloads} 个工作线程")
     
-    def _worker(self):
-        """工作线程 - 串行处理下载任务"""
+    def _worker(self, worker_id: int):
+        """工作线程 - 并发处理下载任务"""
+        logger.info(f"🔧 工作线程-{worker_id} 已启动")
+        
         while self._is_running:
             try:
                 # 从队列获取任务
@@ -96,11 +100,11 @@ class GlobalDownloadManager:
                 
                 # 执行下载任务
                 with self._queue_lock:
-                    self._current_task = task
+                    self._current_tasks.append(task)
                     task.status = DownloadStatus.DOWNLOADING
                     task.start_time = time.time()
                 
-                logger.info(f"🌍 全局下载管理器开始下载: {task.platform} - {task.url}")
+                logger.info(f"🌍 [工作线程-{worker_id}] 开始下载: {task.platform} - {task.url}")
                 
                 try:
                     # 调用实际的下载函数
@@ -131,22 +135,24 @@ class GlobalDownloadManager:
                         task.result = result
                         task.end_time = time.time()
                         self._task_results[task.task_id] = result
-                        self._current_task = None
+                        if task in self._current_tasks:
+                            self._current_tasks.remove(task)
                     
-                    logger.info(f"✅ 全局下载完成: {task.task_id}")
+                    logger.info(f"✅ [工作线程-{worker_id}] 下载完成: {task.task_id}")
                     logger.info(f"🔍 已存储结果到task_results，类型: {type(result)}")
                 
                 except Exception as e:
-                    logger.error(f"❌ 全局下载管理器调用下载函数异常: {e}")
+                    logger.error(f"❌ [工作线程-{worker_id}] 调用下载函数异常: {e}")
                     logger.error(f"   异常类型: {type(e)}")
                     with self._queue_lock:
                         task.status = DownloadStatus.FAILED
                         task.error_msg = str(e)
                         task.end_time = time.time()
                         self._task_results[task.task_id] = {"success": False, "error": str(e)}
-                        self._current_task = None
+                        if task in self._current_tasks:
+                            self._current_tasks.remove(task)
                     
-                    logger.error(f"❌ 全局下载失败: {task.task_id}, 错误: {e}")
+                    logger.error(f"❌ [工作线程-{worker_id}] 下载失败: {task.task_id}, 错误: {e}")
                 
                 finally:
                     self._download_queue.task_done()
@@ -154,12 +160,13 @@ class GlobalDownloadManager:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"❌ 全局下载工作线程异常: {e}")
+                logger.error(f"❌ [工作线程-{worker_id}] 线程异常: {e}")
                 with self._queue_lock:
-                    if self._current_task:
-                        self._current_task.status = DownloadStatus.FAILED
-                        self._current_task.error_msg = str(e)
-                        self._current_task = None
+                    # 清理可能存在的当前任务
+                    if 'task' in locals() and task in self._current_tasks:
+                        task.status = DownloadStatus.FAILED
+                        task.error_msg = str(e)
+                        self._current_tasks.remove(task)
     
     def add_download_task(self, platform: str, url: str, local_path: str, 
                          download_func: Callable, *args, **kwargs) -> str:
@@ -230,15 +237,17 @@ class GlobalDownloadManager:
     def get_global_status(self) -> Dict[str, Any]:
         """获取全局下载状态"""
         with self._queue_lock:
-            current_task_info = None
-            if self._current_task:
-                current_task_info = {
-                    "task_id": self._current_task.task_id,
-                    "platform": self._current_task.platform,
-                    "url": self._current_task.url,
-                    "progress": self._current_task.progress,
-                    "start_time": self._current_task.start_time
+            # 获取所有正在下载的任务信息
+            current_tasks_info = [
+                {
+                    "task_id": task.task_id,
+                    "platform": task.platform,
+                    "url": task.url,
+                    "progress": task.progress,
+                    "start_time": task.start_time
                 }
+                for task in self._current_tasks
+            ]
             
             waiting_tasks = [task for task in self._active_tasks.values() if task.status == DownloadStatus.WAITING]
             downloading_tasks = [task for task in self._active_tasks.values() if task.status == DownloadStatus.DOWNLOADING]
@@ -246,8 +255,9 @@ class GlobalDownloadManager:
             failed_tasks = [task for task in self._active_tasks.values() if task.status == DownloadStatus.FAILED]
             
             return {
-                "is_downloading": self._current_task is not None,
-                "current_task": current_task_info,
+                "is_downloading": len(self._current_tasks) > 0,
+                "current_tasks": current_tasks_info,  # 改为列表
+                "max_concurrent_downloads": self._max_concurrent_downloads,
                 "queue_size": self._download_queue.qsize(),
                 "total_tasks": len(self._active_tasks),
                 "waiting_count": len(waiting_tasks),
@@ -269,10 +279,10 @@ class GlobalDownloadManager:
     def is_downloading(self) -> bool:
         """检查是否有任务正在下载"""
         with self._queue_lock:
-            return self._current_task is not None
+            return len(self._current_tasks) > 0
     
-    def wait_for_completion(self, task_id: str, timeout: int = 1800) -> Dict[str, Any]:
-        """等待任务完成"""
+    def wait_for_completion(self, task_id: str, timeout: int = 7200) -> Dict[str, Any]:
+        """等待任务完成（默认超时2小时，支持多个大文件并发下载）"""
         start_time = time.time()
         
         while True:

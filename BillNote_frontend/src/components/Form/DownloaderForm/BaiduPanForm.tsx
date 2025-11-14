@@ -78,6 +78,7 @@ const BaiduPanForm: React.FC = () => {
   const [loading, setLoading] = useState(true)
   const [authStatus, setAuthStatus] = useState<BaiduPCSAuthStatus | null>(null)
   const [users, setUsers] = useState<BaiduPCSUser[]>([])
+  const [authMethod, setAuthMethod] = useState<'cookie' | 'bduss'>('bduss') // 默认使用BDUSS方式
   const [cookieInput, setCookieInput] = useState('')
   const [bdussInput, setBdussInput] = useState('')
   const [adding, setAdding] = useState(false)
@@ -135,22 +136,32 @@ const BaiduPanForm: React.FC = () => {
 
   // 添加用户
   const addUser = async () => {
-    if (!cookieInput.trim()) {
-      toast.error('请输入完整的Cookie字符串')
-      return
+    // 根据认证方式验证输入
+    if (authMethod === 'bduss') {
+      if (!bdussInput.trim()) {
+        toast.error('请输入BDUSS')
+        return
+      }
+    } else {
+      if (!cookieInput.trim()) {
+        toast.error('请输入完整的Cookie字符串')
+        return
+      }
     }
 
     setAdding(true)
     try {
+      // 根据认证方式构建请求体
+      const requestBody = authMethod === 'bduss' 
+        ? { bduss: bdussInput.trim() }
+        : { cookies: cookieInput.trim() }
+
       const response = await fetch('/api/baidupcs/add_user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          cookies: cookieInput.trim(),
-          bduss: bdussInput.trim() || undefined
-        }),
+        body: JSON.stringify(requestBody),
       })
       
       const result = await response.json()
@@ -340,39 +351,101 @@ const BaiduPanForm: React.FC = () => {
                 <span>添加用户</span>
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-2">
-                <Label htmlFor="cookies">Cookie字符串 *</Label>
-                <Textarea
-                  id="cookies"
-                  value={cookieInput}
-                  onChange={(e) => setCookieInput(e.target.value)}
-                  placeholder="请输入完整的百度网盘Cookie字符串，格式如：BDUSS=xxx; STOKEN=xxx; PSTM=xxx; BAIDUID=xxx; ..."
-                  rows={2}
-                  className="font-mono text-sm resize-none"
-                />
-                <div className="text-xs text-gray-500">
-                  必须包含 BDUSS 字段，其他字段可选但建议包含完整Cookie
+            <CardContent className="space-y-4">
+              {/* 认证方式选择 */}
+              <div className="space-y-3">
+                <Label>认证方式</Label>
+                <div className="flex gap-4">
+                  <div 
+                    className={`flex items-center space-x-2 p-3 border rounded-lg cursor-pointer transition-all ${
+                      authMethod === 'bduss' 
+                        ? 'border-blue-500 bg-blue-50' 
+                        : 'border-gray-300 hover:border-gray-400'
+                    }`}
+                    onClick={() => setAuthMethod('bduss')}
+                  >
+                    <input
+                      type="radio"
+                      name="authMethod"
+                      value="bduss"
+                      checked={authMethod === 'bduss'}
+                      onChange={() => setAuthMethod('bduss')}
+                      className="w-4 h-4 text-blue-600"
+                    />
+                    <div>
+                      <div className="font-medium text-sm">BDUSS</div>
+                      <div className="text-xs text-gray-500">快速登录（推荐）</div>
+                    </div>
+                  </div>
+                  
+                  <div 
+                    className={`flex items-center space-x-2 p-3 border rounded-lg cursor-pointer transition-all ${
+                      authMethod === 'cookie' 
+                        ? 'border-blue-500 bg-blue-50' 
+                        : 'border-gray-300 hover:border-gray-400'
+                    }`}
+                    onClick={() => setAuthMethod('cookie')}
+                  >
+                    <input
+                      type="radio"
+                      name="authMethod"
+                      value="cookie"
+                      checked={authMethod === 'cookie'}
+                      onChange={() => setAuthMethod('cookie')}
+                      className="w-4 h-4 text-blue-600"
+                    />
+                    <div>
+                      <div className="font-medium text-sm">完整Cookie</div>
+                      <div className="text-xs text-gray-500">支持分享功能</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="bduss">BDUSS (可选)</Label>
-                <Input
-                  id="bduss"
-                  value={bdussInput}
-                  onChange={(e) => setBdussInput(e.target.value)}
-                  placeholder="如果Cookie中已包含BDUSS，此处可不填"
-                  className="font-mono text-sm"
-                />
-                <div className="text-xs text-gray-500">
-                  如果Cookie字符串中已包含BDUSS，则此字段可以留空
+              {/* 根据认证方式显示不同的输入框 */}
+              {authMethod === 'bduss' ? (
+                <div className="space-y-2">
+                  <Label htmlFor="bduss">BDUSS *</Label>
+                  <Input
+                    id="bduss"
+                    value={bdussInput}
+                    onChange={(e) => setBdussInput(e.target.value)}
+                    placeholder="请输入BDUSS值，例如：Ww5TzNwRnM3U1ZzbklyOHBlb0liLUl..."
+                    className="font-mono text-sm"
+                  />
+                  <div className="text-xs text-gray-500 space-y-1">
+                    <div>✅ 支持：下载、上传、删除、移动、秒传、离线下载</div>
+                    <div>❌ 不支持：创建分享链接、保存他人分享</div>
+                    <div className="mt-2 text-blue-600">
+                      💡 获取方式：登录百度网盘网页版 → F12开发者工具 → Application/存储 → Cookies → 找到BDUSS
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label htmlFor="cookies">完整Cookie字符串 *</Label>
+                  <Textarea
+                    id="cookies"
+                    value={cookieInput}
+                    onChange={(e) => setCookieInput(e.target.value)}
+                    placeholder="请输入完整的百度网盘Cookie字符串，格式如：BDUSS=xxx; STOKEN=xxx; PSTM=xxx; BAIDUID=xxx; ..."
+                    rows={3}
+                    className="font-mono text-sm resize-none"
+                  />
+                  <div className="text-xs text-gray-500 space-y-1">
+                    <div>✅ 支持：所有BDUSS功能 + 创建分享链接 + 保存他人分享</div>
+                    <div>⚠️  必须包含：BDUSS</div>
+                    <div>📝 可选包含：STOKEN（用于分享功能）、其他Cookie</div>
+                    <div className="mt-2 text-blue-600">
+                      💡 获取方式：登录百度网盘网页版 → F12开发者工具 → Network → 刷新页面 → 找到请求 → 复制Cookie请求头
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <Button 
                 onClick={addUser}
-                disabled={adding || !cookieInput.trim()}
+                disabled={adding || (authMethod === 'bduss' ? !bdussInput.trim() : !cookieInput.trim())}
                 className="w-full"
               >
                 {adding ? (

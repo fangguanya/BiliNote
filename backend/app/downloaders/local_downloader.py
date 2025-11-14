@@ -48,7 +48,7 @@ class LocalDownloader(Downloader, ABC):
                 '-y',  # 覆盖
                 output_path
             ]
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, encoding='utf-8', errors='ignore')
 
             if not os.path.exists(output_path):
                 raise RuntimeError(f"封面图片生成失败: {output_path}")
@@ -91,7 +91,7 @@ class LocalDownloader(Downloader, ABC):
                 output_path
             ]
 
-            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, encoding='utf-8', errors='ignore')
 
             if not os.path.exists(output_path):
                 raise RuntimeError(f"MP3转换失败: {output_path}")

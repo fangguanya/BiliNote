@@ -232,13 +232,28 @@ class BaiduPCSDownloader(Downloader):
             logger.info(f"   远程路径: {remote_path}")
             logger.info(f"   本地目录: {download_path}")
             logger.info(f"   本地文件名: {local_filename}")
+            logger.info(f"   下载质量: {quality}")
+            
+            # 🚀 根据质量参数调整并发数和块大小，大幅提高下载速度
+            if quality == DownloadQuality.fast:
+                concurrency = 32  # 大幅提高并发数
+                chunk_size = 10 * 1024 * 1024  # 10MB，更大的块减少请求次数
+            elif quality == DownloadQuality.medium:
+                concurrency = 64  # 更高并发
+                chunk_size = 20 * 1024 * 1024  # 20MB
+            else:  # slow or original
+                concurrency = 128  # 最高并发，适合大文件
+                chunk_size = 30 * 1024 * 1024  # 30MB（接近50MB上限）
+            
+            logger.info(f"   并发数: {concurrency}, 块大小: {chunk_size // 1024 // 1024}MB")
             
             # 直接使用 API 下载器
             result = self.api_downloader.download_file(
                 remote_path=remote_path,
                 local_dir=download_path,
                 local_filename=local_filename,
-                concurrency=5
+                concurrency=concurrency,
+                chunk_size=chunk_size
             )
             
             logger.info(f"🔍 API 下载器返回结果:")

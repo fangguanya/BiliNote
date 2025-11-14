@@ -78,8 +78,8 @@ class MLXWhisperTranscriber(Transcriber):
             return transcript_result
             
         except Exception as e:
-            logger.error(f"MLX Whisper 转写失败：{e}")
-            raise e
+            logger.error(f"❌ MLX Whisper 转写失败：{e}")
+            raise  # 必须抛出异常
 
     def on_finish(self, video_path: str, result: TranscriptResult) -> None:
         logger.info("MLX Whisper 转写完成")

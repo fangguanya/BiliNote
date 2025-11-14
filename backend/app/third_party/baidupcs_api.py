@@ -275,27 +275,58 @@ class BaiduPCSDownloader:
                 MeDownloader._semaphore = Semaphore(concurrency)
                 MeDownloader._futures = []
             
+            # 🔧 添加下载进度回调
+            import time
+            start_time = time.time()
+            last_log_time = [start_time]  # 使用列表以便在回调中修改
+            total_size = file_info['size']
+            
+            def progress_callback(task_id, downloaded):
+                """下载进度回调"""
+                current_time = time.time()
+                # 每2秒输出一次进度
+                if current_time - last_log_time[0] >= 2.0:
+                    elapsed = current_time - start_time
+                    speed = downloaded / elapsed / 1024 / 1024  # MB/s
+                    progress = (downloaded / total_size * 100) if total_size > 0 else 0
+                    logger.info(f"📥 下载进度: {progress:.1f}% ({downloaded/1024/1024:.1f}MB/{total_size/1024/1024:.1f}MB) 速度: {speed:.2f}MB/s")
+                    last_log_time[0] = current_time
+            
+            # 🔧 传递 max_chunk_size 参数以提高下载速度
             downloader = MeDownloader(
                 "GET",
                 download_link,
                 headers=headers,
                 max_workers=concurrency,
+                max_chunk_size=chunk_size,  # 🎯 关键：设置块大小
+                callback=progress_callback,  # 🎯 添加进度回调
             )
             
             # MeDownloader.download() 参数: (localpath, task_id, continue_, done_callback)
             # 直接下载到最终路径，不使用 .tmp 后缀
+            logger.info(f"🚀 启动下载任务，块大小: {chunk_size/1024/1024:.1f}MB，并发数: {concurrency}")
             downloader.download(local_path, task_id=None, continue_=False)
             
+            # 🎯 关键：等待下载完成
+            logger.info("⏳ 等待下载完成...")
+            from concurrent.futures import as_completed
+            completed_futures = list(as_completed(MeDownloader._futures))
+            logger.info(f"✅ 所有下载任务已完成 ({len(completed_futures)} 个)")
+            
             # 等待文件完全写入
-            import time
             time.sleep(0.5)
             
             # 验证下载结果
             if os.path.exists(local_path):
                 actual_size = os.path.getsize(local_path)
+                total_time = time.time() - start_time
+                avg_speed = actual_size / total_time / 1024 / 1024  # MB/s
+                
                 logger.info(f"✅ 下载成功!")
                 logger.info(f"   文件路径: {local_path}")
-                logger.info(f"   文件大小: {actual_size} 字节")
+                logger.info(f"   文件大小: {actual_size/1024/1024:.2f}MB")
+                logger.info(f"   总耗时: {total_time:.1f}秒")
+                logger.info(f"   平均速度: {avg_speed:.2f}MB/s")
                 
                 return {
                     'success': True,
@@ -322,9 +353,8 @@ class BaiduPCSDownloader:
                 'error_type': 'exception',
                 'exception': str(e)
             }
-        finally:
-            # 清理 MeDownloader
-            MeDownloader._exit_executor()
+        # 🚀 移除 finally 块，不再频繁关闭线程池
+        # 让线程池保持活跃以提高并发下载效率
     
     # ==================== 用户管理功能 ====================
     
