@@ -81,7 +81,8 @@ class BaiduPCSDownloader(Downloader):
         if share_code or extract_code:
             logger.warning("⚠️ 当前版本不支持分享链接，只能获取个人文件列表")
         
-        result = self.api_downloader.list_files(path, recursive=recursive)
+        # 🚀 使用优化后的API，支持缓存
+        result = self.api_downloader.list_files(path, recursive=recursive, use_cache=use_cache)
         if result.get("success", False):
             return result.get("files", [])
         return []

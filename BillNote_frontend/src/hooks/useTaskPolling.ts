@@ -60,7 +60,8 @@ export const useTaskPolling = (interval = 3000) => {
           if (status && status !== task.status) {
             if (status === 'SUCCESS') {
               const { markdown, transcript, audio_meta } = res.data.result
-              toast.success('笔记生成成功')
+              
+              // 先更新任务内容
               updateTaskContentRef.current(task.id, {
                 status,
                 markdown,
@@ -69,11 +70,19 @@ export const useTaskPolling = (interval = 3000) => {
               })
 
               // 检查是否需要自动保存到Notion
-              if (task.formData.auto_save_notion || notionConfigRef.current.autoSaveEnabled) {
+              const shouldAutoSave = task.formData.auto_save_notion || notionConfigRef.current.autoSaveEnabled
+              
+              if (shouldAutoSave) {
                 console.log('🔄 开始自动保存到Notion:', task.id)
                 const notionConfig = notionConfigRef.current
                 
-                if (notionConfig.token) {
+                if (!notionConfig.token) {
+                  // 没有配置Notion令牌
+                  console.warn('⚠️ 未找到Notion令牌，跳过自动保存')
+                  toast.success('笔记生成成功')
+                  toast.error('未配置Notion令牌，无法自动保存到Notion')
+                } else {
+                  // 有Notion令牌，尝试自动保存
                   try {
                     const result = await saveNoteToNotion({
                       taskId: task.id,
@@ -82,6 +91,7 @@ export const useTaskPolling = (interval = 3000) => {
                     })
 
                     if (result) {
+                      // 保存成功
                       updateTaskNotionRef.current(task.id, {
                         saved: true,
                         pageId: result.page_id,
@@ -90,19 +100,23 @@ export const useTaskPolling = (interval = 3000) => {
                         autoSave: true
                       })
                       console.log('✅ 自动保存到Notion成功:', result.url)
-                      toast.success(`笔记已自动保存到Notion`)
+                      toast.success(`✅ 笔记生成成功并已自动保存到Notion`)
                     } else {
-                      console.warn('⚠️ 自动保存到Notion失败')
-                      toast.error('自动保存到Notion失败，请手动保存')
+                      // 保存失败（result为null）
+                      console.warn('⚠️ 自动保存到Notion失败: 返回结果为空')
+                      toast.success('笔记生成成功')
+                      toast.error('❌ 但自动保存到Notion失败，请手动保存')
                     }
                   } catch (error) {
+                    // 保存出错（异常）
                     console.error('❌ 自动保存到Notion出错:', error)
-                    toast.error('自动保存到Notion失败，请手动保存')
+                    toast.success('笔记生成成功')
+                    toast.error('❌ 但自动保存到Notion失败，请手动保存')
                   }
-                } else {
-                  console.warn('⚠️ 未找到Notion令牌，跳过自动保存')
-                  toast.error('未配置Notion令牌，请前往设置页面配置')
                 }
+              } else {
+                // 不需要自动保存，直接显示成功
+                toast.success('✅ 笔记生成成功')
               }
             } else if (status === 'FAILED') {
               updateTaskContentRef.current(task.id, { status })

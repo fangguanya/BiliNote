@@ -8,7 +8,13 @@ import { Card, CardContent } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { getBaiduPanAuthStatus, getBaiduPanFileList, selectBaiduPanFiles } from '@/services/note'
+import { 
+  getBaiduPanAuthStatus, 
+  getBaiduPanFileList, 
+  selectBaiduPanFiles,
+  clearBaiduPanBackendCache,
+  clearBaiduPanFileListCache
+} from '@/services/note'
 import { generateBaiduPanQr, checkBaiduPanLoginStatus } from '@/services/auth'
 import { BaiduPanLogo } from '@/components/Icons/platform'
 import toast from 'react-hot-toast'
@@ -22,7 +28,8 @@ import {
   LoaderIcon,
   CheckIcon,
   AlertCircleIcon,
-  RefreshCwIcon
+  RefreshCwIcon,
+  TrashIcon
 } from 'lucide-react'
 
 interface BaiduPanFile {
@@ -152,13 +159,15 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
   }
 
   // 加载文件列表
-  const loadFiles = async (path: string, forceRecursive?: boolean) => {
+  const loadFiles = async (path: string, forceRecursive?: boolean, forceRefresh: boolean = false) => {
     setLoading(true)
     try {
       // 使用传入的recursive参数，如果没有传入则使用state中的recursive
       const useRecursive = forceRecursive !== undefined ? forceRecursive : recursive
-      console.log('🗂️ 开始加载文件列表:', path, 'recursive:', useRecursive)
-      const result = await getBaiduPanFileList(path, undefined, undefined, useRecursive)
+      console.log('🗂️ 开始加载文件列表:', path, 'recursive:', useRecursive, 'forceRefresh:', forceRefresh)
+      
+      // 🚀 支持强制刷新（绕过缓存）
+      const result = await getBaiduPanFileList(path, undefined, undefined, useRecursive, !forceRefresh)
       console.log('📋 文件列表结果:', result)
       
       if (result && result.files) {
@@ -167,7 +176,16 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
         setCurrentPath(path)
         // 保存当前路径到localStorage
         saveCurrentPath(path)
-        console.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件`)
+        
+        // 🚀 显示性能信息
+        const fromCache = result.from_cache ? '(来自缓存)' : ''
+        const fetchTime = result.fetch_time ? ` 耗时: ${(result.fetch_time * 1000).toFixed(0)}ms` : ''
+        console.log(`✅ 文件列表加载成功: ${result.files.length} 个文件，${result.media_count || 0} 个媒体文件${fromCache}${fetchTime}`)
+        
+        // 如果来自缓存，给用户一个提示
+        if (result.from_cache && !forceRefresh) {
+          toast.success(`已从缓存加载 ${result.files.length} 个文件`, { duration: 1000 })
+        }
       } else {
         console.warn('⚠️ 文件列表结果格式异常:', result)
         setFiles([])
@@ -191,6 +209,18 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
       setMediaCount(0)
     } finally {
       setLoading(false)
+    }
+  }
+  
+  // 🚀 清空缓存并重新加载
+  const handleClearCache = async () => {
+    try {
+      await clearBaiduPanBackendCache()
+      clearBaiduPanFileListCache()
+      // 重新加载当前路径
+      await loadFiles(currentPath, undefined, true)
+    } catch (error) {
+      console.error('清空缓存失败:', error)
     }
   }
 
@@ -498,6 +528,7 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                   size="sm"
                   onClick={goHome}
                   className="h-6 px-2"
+                  title="返回根目录"
                 >
                   <HomeIcon className="w-3 h-3" />
                 </Button>
@@ -508,20 +539,34 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
                     size="sm"
                     onClick={goBack}
                     className="h-6 px-2"
+                    title="返回上级目录"
                   >
                     <ArrowLeftIcon className="w-3 h-3" />
                   </Button>
                 )}
                 
-                <span className="truncate">当前路径: {currentPath}</span>
+                <span className="truncate flex-1">当前路径: {currentPath}</span>
                 
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => loadFiles(currentPath)}
+                  onClick={() => loadFiles(currentPath, undefined, true)}
                   className="h-6 px-2"
+                  title="强制刷新（绕过缓存）"
+                  disabled={loading}
                 >
-                  <RefreshCwIcon className="w-3 h-3" />
+                  <RefreshCwIcon className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                </Button>
+                
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleClearCache}
+                  className="h-6 px-2"
+                  title="清空所有缓存"
+                  disabled={loading}
+                >
+                  <TrashIcon className="w-3 h-3" />
                 </Button>
                 
                 {/* 递归选项 */}
@@ -599,9 +644,27 @@ const BaiduPanFileSelector: React.FC<BaiduPanFileSelectorProps> = ({
               {/* 文件列表 */}
               <ScrollArea className="h-96 border rounded-md p-2">
                 {loading ? (
-                  <div className="flex justify-center items-center py-8">
-                    <LoaderIcon className="w-6 h-6 animate-spin" />
-                    <span className="ml-2">加载中...</span>
+                  // 🚀 骨架屏加载状态
+                  <div className="space-y-2">
+                    {[1, 2, 3, 4, 5].map((i) => (
+                      <div key={i} className="animate-pulse">
+                        <Card>
+                          <CardContent className="p-3">
+                            <div className="flex items-center gap-3">
+                              <div className="w-4 h-4 bg-gray-300 rounded"></div>
+                              <div className="flex-1 space-y-2">
+                                <div className="h-4 bg-gray-300 rounded w-3/4"></div>
+                                <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    ))}
+                    <div className="flex justify-center items-center py-4">
+                      <LoaderIcon className="w-5 h-5 animate-spin text-blue-500" />
+                      <span className="ml-2 text-sm text-gray-600">正在加载文件列表...</span>
+                    </div>
                   </div>
                 ) : files.length === 0 ? (
                   <div className="text-center py-8 text-gray-500">

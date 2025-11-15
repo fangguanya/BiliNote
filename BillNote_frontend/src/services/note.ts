@@ -345,18 +345,62 @@ export const getBaiduPanAuthStatus = async () => {
   }
 }
 
+// 🚀 前端缓存：缓存百度网盘文件列表
+const fileListCache = new Map<string, {data: any, timestamp: number}>()
+const CACHE_TTL = 5 * 60 * 1000 // 5分钟缓存
+
 // 获取百度网盘文件列表
-export const getBaiduPanFileList = async (path: string = "/", shareCode?: string, extractCode?: string, recursive?: boolean) => {
+export const getBaiduPanFileList = async (
+  path: string = "/", 
+  shareCode?: string, 
+  extractCode?: string, 
+  recursive?: boolean,
+  useCache: boolean = true  // 🚀 新增：是否使用前端缓存
+) => {
   try {
-    const params: any = { path }
+    // 🚀 生成缓存键
+    const cacheKey = `${path}|${shareCode || ''}|${extractCode || ''}|${recursive || false}`
+    
+    // 🚀 尝试从前端缓存获取
+    if (useCache) {
+      const cached = fileListCache.get(cacheKey)
+      if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+        console.log('✅ 使用前端缓存:', path)
+        return cached.data
+      }
+    }
+    
+    const params: any = { path, use_cache: useCache }
     if (shareCode) params.share_code = shareCode
     if (extractCode) params.extract_code = extractCode
     if (recursive !== undefined) params.recursive = recursive
     
+    console.log('🔍 请求百度网盘文件列表:', params)
+    const startTime = Date.now()
+    
     const response = await request.get('/baidu_pan/file_list', { params })
     
+    const elapsed = Date.now() - startTime
+    console.log(`✅ 文件列表请求完成，耗时: ${elapsed}ms`)
+    
     if (response.data.code === 0) {
-      return response.data.data
+      const data = response.data.data
+      
+      // 🚀 保存到前端缓存
+      if (useCache) {
+        fileListCache.set(cacheKey, {
+          data,
+          timestamp: Date.now()
+        })
+        console.log('💾 文件列表已缓存到前端:', path)
+      }
+      
+      // 显示缓存命中信息
+      if (data.from_cache) {
+        console.log('🎯 后端缓存命中')
+      }
+      
+      return data
     } else {
       toast.error(response.data.message || '获取文件列表失败')
       throw new Error(response.data.message || '获取文件列表失败')
@@ -365,6 +409,29 @@ export const getBaiduPanFileList = async (path: string = "/", shareCode?: string
     console.error('❌ 获取百度网盘文件列表失败:', e)
     toast.error('获取文件列表失败，请稍后重试')
     throw e
+  }
+}
+
+// 🚀 清空前端文件列表缓存
+export const clearBaiduPanFileListCache = () => {
+  fileListCache.clear()
+  console.log('🧹 已清空前端文件列表缓存')
+}
+
+// 🚀 清空后端缓存
+export const clearBaiduPanBackendCache = async () => {
+  try {
+    const response = await request.post('/baidupcs/cache/clear')
+    if (response.data.code === 0) {
+      toast.success('缓存已清空')
+      // 同时清空前端缓存
+      clearBaiduPanFileListCache()
+    } else {
+      toast.error(response.data.message || '清空缓存失败')
+    }
+  } catch (e: any) {
+    console.error('❌ 清空缓存失败:', e)
+    toast.error('清空缓存失败')
   }
 }
 

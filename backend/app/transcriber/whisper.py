@@ -5,6 +5,7 @@ PyTorch Whisper 转写器
 import os
 import torch
 import whisper
+import threading
 
 from app.decorators.timeit import timeit
 from app.models.transcriber_model import TranscriptSegment, TranscriptResult
@@ -15,6 +16,9 @@ from events import transcription_finished
 
 
 logger = get_logger(__name__)
+
+# 🔒 全局锁：保护GPU模型不被多线程同时访问
+_whisper_lock = threading.Lock()
 
 
 class WhisperTranscriber(Transcriber):
@@ -168,15 +172,21 @@ class WhisperTranscriber(Transcriber):
                     raise RuntimeError("转写时CUDA不可用！")
                 logger.info(f"   GPU显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f}GB")
             
-            # 🔧 执行转写
-            logger.info(f"🔧 开始执行转写...")
-            result = self.model.transcribe(
-                audio=file_path,
-                language=self.language,
-                fp16=self.fp16,
-                verbose=False,  # 不打印进度
-                task="transcribe",  # 转写任务（不是翻译）
-            )
+            # 🔒 获取全局锁，防止多线程同时使用GPU模型
+            logger.info(f"🔒 等待获取GPU锁...")
+            with _whisper_lock:
+                logger.info(f"✅ 已获取GPU锁，开始执行转写...")
+                
+                # 🔧 执行转写
+                result = self.model.transcribe(
+                    audio=file_path,
+                    language=self.language,
+                    fp16=self.fp16,
+                    verbose=False,  # 不打印进度
+                    task="transcribe",  # 转写任务（不是翻译）
+                )
+                
+                logger.info(f"🔓 转写完成，释放GPU锁")
             
             logger.info(f"✅ 转写完成，开始处理结果...")
             

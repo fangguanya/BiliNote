@@ -172,11 +172,15 @@ class NotionService:
             List[Dict]: 数据源列表，每个包含 id 和 name
         """
         try:
+            logger.info(f"🔍 正在获取数据库数据源: {database_id}")
             response = self.client.databases.retrieve(database_id)
             data_sources = response.get("data_sources", [])
+            logger.info(f"✅ 找到 {len(data_sources)} 个数据源")
             return data_sources
         except Exception as e:
-            logger.error(f"获取数据库数据源失败: {e}")
+            logger.error(f"❌ 获取数据库数据源失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return []
     
     def _get_database_properties(self, database_id: str) -> Dict[str, Any]:
@@ -190,10 +194,46 @@ class NotionService:
             Dict: 数据库属性信息
         """
         try:
+            logger.info(f"🔍 正在获取数据库属性: {database_id}")
             response = self.client.databases.retrieve(database_id)
-            return response.get("properties", {})
+            logger.debug(f"📦 数据库完整响应keys: {list(response.keys())}")
+            
+            properties = response.get("properties", {})
+            
+            if not properties:
+                logger.warning(f"⚠️ 数据库 {database_id} 的properties字段为空")
+                logger.warning(f"📋 响应的所有键: {list(response.keys())}")
+                
+                # Notion API 2025-09-03 回退方案：使用旧版API获取properties
+                logger.info("🔄 使用旧版API (2022-06-28) 获取数据库属性...")
+                try:
+                    import requests
+                    headers = {
+                        "Authorization": f"Bearer {self.token}",
+                        "Notion-Version": "2022-06-28",
+                        "Content-Type": "application/json"
+                    }
+                    http_response = requests.get(
+                        f"https://api.notion.com/v1/databases/{database_id}",
+                        headers=headers,
+                        timeout=30
+                    )
+                    
+                    if http_response.status_code == 200:
+                        old_api_response = http_response.json()
+                        properties = old_api_response.get("properties", {})
+                        logger.info(f"✅ 使用旧版API获取到 {len(properties)} 个属性")
+                    else:
+                        logger.error(f"❌ 旧版API请求失败: {http_response.status_code}")
+                except Exception as http_error:
+                    logger.error(f"❌ 旧版API请求出错: {http_error}")
+            
+            logger.info(f"✅ 最终获取到 {len(properties)} 个属性")
+            return properties
         except Exception as e:
-            logger.error(f"获取数据库属性失败: {e}")
+            logger.error(f"❌ 获取数据库属性失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return {}
 
     def create_page_in_database(self, database_id: str, note_result: NoteResult, data_source_id: str = None) -> Dict[str, Any]:
@@ -209,9 +249,25 @@ class NotionService:
             Dict: 创建结果
         """
         try:
-            # 步骤1: 获取数据库的数据源
+            # 步骤1: 一次性获取数据库完整信息
+            logger.info(f"🔍 正在获取数据库完整信息: {database_id}")
+            try:
+                db_response = self.client.databases.retrieve(database_id)
+                logger.debug(f"📦 数据库完整响应keys: {list(db_response.keys())}")
+            except Exception as retrieve_error:
+                logger.error(f"❌ 获取数据库信息失败: {retrieve_error}")
+                import traceback
+                logger.error(f"详细错误: {traceback.format_exc()}")
+                return {
+                    "success": False,
+                    "error": f"无法获取数据库信息: {str(retrieve_error)}"
+                }
+            
+            # 获取数据源
             if not data_source_id:
-                data_sources = self._get_database_data_sources(database_id)
+                data_sources = db_response.get("data_sources", [])
+                logger.info(f"📊 数据库有 {len(data_sources)} 个数据源")
+                
                 if not data_sources:
                     return {
                         "success": False,
@@ -219,10 +275,45 @@ class NotionService:
                     }
                 # 使用第一个数据源
                 data_source_id = data_sources[0]["id"]
-                logger.info(f"使用数据源: {data_source_id} ({data_sources[0].get('name', '未命名')})")
+                logger.info(f"✅ 使用数据源: {data_source_id} ({data_sources[0].get('name', '未命名')})")
             
             # 获取数据库属性结构
-            db_properties = self._get_database_properties(database_id)
+            # 注意：在 Notion API 2025-09-03 中，databases.retrieve() 不再返回 properties
+            # 需要通过查询数据库页面或使用其他方法获取 schema
+            db_properties = db_response.get("properties", {})
+            logger.info(f"📋 数据库属性 (properties字段): {list(db_properties.keys())}")
+            
+            if not db_properties:
+                logger.warning(f"⚠️ 数据库响应中没有properties字段")
+                logger.warning(f"📋 数据库响应的所有字段: {list(db_response.keys())}")
+                
+                # Notion API 2025-09-03 的解决方案：直接使用原始 HTTP 请求获取完整的数据库信息
+                logger.info("🔄 尝试使用原始HTTP请求获取数据库schema...")
+                try:
+                    import requests
+                    headers = {
+                        "Authorization": f"Bearer {self.token}",
+                        "Notion-Version": "2022-06-28",  # 使用旧版API来获取properties
+                        "Content-Type": "application/json"
+                    }
+                    response = requests.get(
+                        f"https://api.notion.com/v1/databases/{database_id}",
+                        headers=headers,
+                        timeout=30
+                    )
+                    
+                    if response.status_code == 200:
+                        old_api_response = response.json()
+                        db_properties = old_api_response.get("properties", {})
+                        logger.info(f"✅ 使用旧版API获取到 {len(db_properties)} 个属性")
+                        logger.info(f"📋 属性列表: {list(db_properties.keys())}")
+                    else:
+                        logger.error(f"❌ 使用旧版API获取失败: {response.status_code}")
+                        logger.error(f"响应: {response.text}")
+                except Exception as http_error:
+                    logger.error(f"❌ HTTP请求失败: {http_error}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
             # 准备页面属性
             properties = {}
@@ -230,31 +321,39 @@ class NotionService:
             # 寻找标题属性并设置
             title_property = None
             for prop_name, prop_config in db_properties.items():
-                if prop_config.get("type") == "title":
+                prop_type = prop_config.get("type")
+                logger.debug(f"  - 属性 '{prop_name}': 类型 {prop_type}")
+                if prop_type == "title":
                     title_property = prop_name
                     break
             
-            if title_property:
-                properties[title_property] = {
-                    "title": [
-                        {
-                            "text": {
-                                "content": note_result.audio_meta.title or "未命名笔记"
-                            }
-                        }
-                    ]
+            if not title_property:
+                # 如果没有找到标题属性，记录详细的错误信息
+                logger.error(f"❌ 数据库 {database_id} 没有标题(title)类型的属性")
+                logger.error(f"📋 数据库所有属性及类型:")
+                for prop_name, prop_config in db_properties.items():
+                    logger.error(f"  - '{prop_name}': {prop_config.get('type')}")
+                
+                # 构建属性列表字符串
+                props_info = ', '.join([f"{name}({config.get('type')})" for name, config in db_properties.items()])
+                
+                return {
+                    "success": False,
+                    "error": f"数据库没有标题(title)类型的属性。Notion数据库必须有一个标题属性才能创建页面。当前数据库属性: {props_info}"
                 }
-            else:
-                # 如果没有找到标题属性，使用Name作为默认
-                properties["Name"] = {
-                    "title": [
-                        {
-                            "text": {
-                                "content": note_result.audio_meta.title or "未命名笔记"
-                            }
+            
+            # 设置标题属性
+            page_title = note_result.audio_meta.title or "未命名笔记"
+            properties[title_property] = {
+                "title": [
+                    {
+                        "text": {
+                            "content": page_title
                         }
-                    ]
-                }
+                    }
+                ]
+            }
+            logger.info(f"✅ 使用标题属性 '{title_property}': {page_title}")
             
             # 智能匹配其他属性
             for prop_name, prop_config in db_properties.items():

@@ -321,29 +321,47 @@ def get_file_list(
     recursive: bool = Query(False, description="是否递归列出子目录"),
     use_cache: bool = Query(True, description="是否使用缓存")
 ):
-    """获取文件列表"""
+    """
+    获取文件列表
+    
+    🚀 优化：
+    - 添加了缓存机制，默认缓存5分钟（非递归）或10分钟（递归）
+    - 支持通过 use_cache=False 强制刷新
+    """
     try:
         if not api_downloader.is_authenticated():
             return R.error("未认证，请先添加用户", code=401)
         
-        downloader = BaiduPCSDownloader()
-        files = downloader.get_file_list(path, use_cache=use_cache, recursive=recursive)
+        # 🚀 直接使用API下载器，避免中间层
+        result = api_downloader.list_files(path, recursive=recursive, use_cache=use_cache)
+        
+        if not result.get("success", False):
+            return R.error(result.get("message", "获取文件列表失败"), code=500)
+        
+        files = result.get("files", [])
         
         # 如果只要媒体文件，进行过滤
         if media_only:
             files = [f for f in files if f.get("is_media", False)]
         
+        # 统计媒体文件数量
+        media_count = len([f for f in files if f.get("is_media", False)])
+        
         return R.success({
             "files": files,
             "total": len(files),
-            "media_count": len([f for f in files if f.get("is_media", False)]),
-            "current_path": path
+            "media_count": media_count,
+            "current_path": path,
+            "from_cache": use_cache and result.get("fetch_time", 0) < 0.1,  # 如果耗时很短，很可能来自缓存
+            "fetch_time": result.get("fetch_time", 0)
         })
         
     except AuthRequiredException as e:
         return R.error("认证已过期，请重新添加用户", code=401)
     except Exception as e:
         logger.error(f"❌ 获取文件列表失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return R.error(f"获取文件列表失败: {str(e)}", code=500)
 
 
@@ -811,4 +829,34 @@ def cancel_global_task(task_id: str):
         
     except Exception as e:
         logger.error(f"❌ 取消全局任务失败: {e}")
-        return R.error(f"取消全局任务失败: {str(e)}", code=500) 
+        return R.error(f"取消全局任务失败: {str(e)}", code=500)
+
+
+# =============== 缓存管理接口 ===============
+
+@router.post("/cache/clear")
+def clear_cache():
+    """清空百度网盘文件列表缓存"""
+    try:
+        from app.utils.cache_manager import clear_baidu_pan_cache
+        
+        clear_baidu_pan_cache()
+        return R.success({"message": "缓存已清空"})
+        
+    except Exception as e:
+        logger.error(f"❌ 清空缓存失败: {e}")
+        return R.error(f"清空缓存失败: {str(e)}", code=500)
+
+
+@router.get("/cache/stats")
+def get_cache_stats():
+    """获取缓存统计信息"""
+    try:
+        from app.utils.cache_manager import cache_manager
+        
+        stats = cache_manager.get_all_stats()
+        return R.success(stats)
+        
+    except Exception as e:
+        logger.error(f"❌ 获取缓存统计失败: {e}")
+        return R.error(f"获取缓存统计失败: {str(e)}", code=500) 

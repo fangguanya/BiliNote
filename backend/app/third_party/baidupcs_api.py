@@ -7,6 +7,7 @@ BaiduPCS API 下载器
 
 import os
 import hashlib
+import time
 from typing import Optional, Dict, Any
 from pathlib import Path
 
@@ -547,13 +548,14 @@ class BaiduPCSDownloader:
     
     # ==================== 文件操作功能 ====================
     
-    def list_files(self, path: str = "/", recursive: bool = False) -> Dict[str, Any]:
+    def list_files(self, path: str = "/", recursive: bool = False, use_cache: bool = True) -> Dict[str, Any]:
         """
         列出文件
         
         Args:
             path: 远程路径
             recursive: 是否递归列出子目录
+            use_cache: 是否使用缓存（默认True）
             
         Returns:
             文件列表字典
@@ -565,20 +567,41 @@ class BaiduPCSDownloader:
                     'message': '未登录'
                 }
             
+            # 🚀 使用缓存优化性能
+            from app.utils.cache_manager import get_baidu_pan_cache, generate_cache_key
+            
+            # 生成缓存键
+            cache_key = f"list_files:{generate_cache_key(path, recursive)}"
+            
+            # 尝试从缓存获取
+            if use_cache:
+                cache = get_baidu_pan_cache()
+                cached_result = cache.get(cache_key)
+                if cached_result is not None:
+                    logger.info(f"✅ 使用缓存的文件列表: {path} (recursive={recursive})")
+                    return cached_result
+            
+            logger.info(f"🔍 从百度网盘API获取文件列表: {path} (recursive={recursive})")
+            start_time = time.time()
+            
             # 列出文件
             pcs_files = self.api.list(path)
             
-            # 定义媒体文件扩展名
+            # 定义媒体文件扩展名（预编译为集合以提高性能）
             video_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.ts', '.m2ts', '.f4v', '.rmvb', '.rm'}
             audio_extensions = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma', '.m4a', '.ape', '.ac3', '.dts'}
+            media_extensions = video_extensions | audio_extensions
             
             files = []
             for pcs_file in pcs_files:
                 filename = os.path.basename(pcs_file.path)
                 file_ext = os.path.splitext(filename)[1].lower()
                 
-                # 判断是否为媒体文件
-                is_media = (file_ext in video_extensions or file_ext in audio_extensions) and not pcs_file.is_dir
+                # 🚀 优化：只判断一次是否为媒体文件
+                is_media = (file_ext in media_extensions) and (not pcs_file.is_dir)
+                
+                # 🚀 优化：格式化文件大小
+                size_readable = self._format_size(pcs_file.size) if not pcs_file.is_dir else "-"
                 
                 file_info = {
                     'path': pcs_file.path,
@@ -586,30 +609,64 @@ class BaiduPCSDownloader:
                     'is_dir': pcs_file.is_dir,
                     'is_media': is_media,
                     'size': pcs_file.size,
+                    'size_readable': size_readable,
                     'fs_id': pcs_file.fs_id,
-                    'md5': pcs_file.md5,
-                    'server_mtime': pcs_file.server_mtime
+                    'md5': pcs_file.md5 if hasattr(pcs_file, 'md5') else None,
+                    'ctime': pcs_file.server_ctime if hasattr(pcs_file, 'server_ctime') else pcs_file.server_mtime
                 }
                 files.append(file_info)
                 
                 # 如果是目录且需要递归
                 if recursive and pcs_file.is_dir:
-                    sub_result = self.list_files(pcs_file.path, recursive=True)
+                    sub_result = self.list_files(pcs_file.path, recursive=True, use_cache=use_cache)
                     if sub_result.get('success'):
                         files.extend(sub_result.get('files', []))
             
-            return {
+            elapsed_time = time.time() - start_time
+            logger.info(f"✅ 文件列表获取成功: {len(files)} 个项目，耗时: {elapsed_time:.2f}秒")
+            
+            result = {
                 'success': True,
                 'files': files,
-                'count': len(files)
+                'count': len(files),
+                'fetch_time': elapsed_time
             }
+            
+            # 🚀 保存到缓存
+            if use_cache:
+                cache = get_baidu_pan_cache()
+                # 递归模式使用较长的TTL（10分钟），因为数据量大
+                # 非递归模式使用较短的TTL（5分钟）
+                ttl = 600 if recursive else 300
+                cache.set(cache_key, result, ttl=ttl)
+                logger.debug(f"💾 文件列表已缓存: {path} (TTL={ttl}秒)")
+            
+            return result
             
         except Exception as e:
             logger.error(f"列出文件失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 'success': False,
                 'message': f'列出文件失败: {str(e)}'
             }
+    
+    def _format_size(self, size: int) -> str:
+        """
+        格式化文件大小
+        
+        Args:
+            size: 字节数
+            
+        Returns:
+            格式化后的大小字符串
+        """
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return f"{size:.2f} {unit}"
+            size /= 1024.0
+        return f"{size:.2f} PB"
     
     def upload_file(self, local_path: str, remote_path: str) -> Dict[str, Any]:
         """
