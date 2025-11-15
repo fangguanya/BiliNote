@@ -166,6 +166,36 @@ class WhisperTranscriber(Transcriber):
             logger.info(f"   模型: {self.model_size}")
             logger.info(f"   设备: {self.device}")
             
+            # 🔍 验证音频文件
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"音频文件不存在: {file_path}")
+            
+            file_size = os.path.getsize(file_path)
+            logger.info(f"   文件大小: {file_size / 1024 / 1024:.2f}MB")
+            
+            if file_size == 0:
+                raise ValueError(f"音频文件为空（0字节）: {file_path}")
+            
+            # 🔍 检查音频是否有有效的音轨
+            try:
+                # 尝试加载音频，这会检测音频是否有效
+                audio = whisper.load_audio(file_path)
+                audio_duration = len(audio) / whisper.audio.SAMPLE_RATE
+                logger.info(f"   音频时长: {audio_duration:.1f}秒")
+                logger.info(f"   音频样本数: {len(audio)}")
+                
+                if len(audio) == 0:
+                    raise ValueError(f"音频文件没有音频数据（可能只有视频轨道，或者是静音视频）: {file_path}")
+                
+                # 检查音频是否全为0（静音）
+                import numpy as np
+                if np.abs(audio).max() < 0.0001:
+                    logger.warning(f"⚠️ 音频文件似乎是完全静音的: {file_path}")
+                    
+            except Exception as audio_check_error:
+                logger.error(f"❌ 音频文件验证失败: {audio_check_error}")
+                raise ValueError(f"音频文件无效或损坏: {file_path}") from audio_check_error
+            
             # 🔧 再次检查 CUDA 状态
             if self.device == "cuda":
                 if not torch.cuda.is_available():
